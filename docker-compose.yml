@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB:       retailmind
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-retailmind_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./scripts/002_seed.sql:/docker-entrypoint-initdb.d/002_seed.sql:ro
+
+volumes:
+  postgres_data:

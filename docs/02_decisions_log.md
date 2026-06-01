@@ -75,3 +75,15 @@ The column is named `region`, not `state`.
 The seed script (`scripts/002_seed.sql`) uses `SELECT setseed(0.42)` before any `random()` call. This pins PostgreSQL's PRNG so that every call to `random()` produces an identical sequence on every run, giving the same ~5,000 sales rows every time the script is executed. Deterministic data means demo answers never change between sessions.
 
 **Why `md5(...)::uuid` instead of `gen_random_uuid()` for transaction IDs.** `gen_random_uuid()` draws from the kernel's CSPRNG (the OS entropy pool). This source is completely separate from PostgreSQL's PRNG — `setseed()` has no effect on it. Calling `gen_random_uuid()` after `setseed()` would produce different UUIDs on every run, breaking reproducibility. Instead, transaction IDs are generated as `md5(month_idx::text || ':' || basket_idx::text)::uuid`. This is a deterministic hash: the same (month, basket) pair always produces the same UUID, so baskets are stable across runs while still being unique.
+
+---
+
+## 10. Docker Postgres for dev, Supabase for prod; same migrations against both
+
+Local development uses a `postgres:16` container managed by `docker-compose.yml`. Production uses Supabase (hosted Postgres). The same migration files (`scripts/001_schema.sql`, `scripts/002_seed.sql`) run against both environments.
+
+**Why split dev and prod this way.** Running a real Postgres locally (not SQLite, not mocks) means the dev schema is byte-for-byte identical to prod. Type mismatches, generated-column behaviour, and role-based access are all tested locally before anything reaches Supabase. The `DATABASE_URL` environment variable is the only thing that changes between environments — the backend code and migrations are untouched.
+
+**Why Supabase for prod.** Supabase provides managed Postgres with connection pooling (pgBouncer), row-level security hooks, and a dashboard for quick data inspection — useful during demo and interview settings. It is also free at the scale of this project. The alternative (self-hosted Postgres on a VPS) adds operational overhead with no benefit for a portfolio project.
+
+**Why not Docker in prod.** Keeping prod infra out of scope means the portfolio project stays focused on the AI/backend code. Supabase abstracts the database operations layer away.
