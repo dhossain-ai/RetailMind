@@ -21,6 +21,9 @@ node_modules/
 .next/
 dist/
 
+# ChromaDB — local vector store (generated at runtime, not committed)
+data/chroma/
+
 # OS
 .DS_Store
 Thumbs.db

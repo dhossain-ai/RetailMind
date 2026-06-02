@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder:7b"
+    chroma_path: str = "data/chroma"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    document_top_k: int = 5
 
 
 settings = Settings()
