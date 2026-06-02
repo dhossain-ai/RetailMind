@@ -35,13 +35,28 @@ All 6 verification queries from `docs/06_seed_expectations.md` run against the l
 
 Q5 query updated: `COALESCE(..., 0)` added around the filtered Household SUM so zero-sales months return `0.0%` instead of `NULL`.
 
+### 2026-06-02 — Backend skeleton
+
+- **`pyproject.toml`** — Python package manifest with initial dependencies: FastAPI, Uvicorn, pydantic-settings, httpx. No DB or vector-store libraries yet.
+- **`backend/config.py`** — `pydantic-settings` `Settings` class reading from `.env`. Covers `APP_ENV`, `DATABASE_URL`, `LLM_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`.
+- **`backend/main.py`** — FastAPI app with a single `/health` endpoint returning `{"status": "ok", "env": ..., "version": ...}`. Does not require Ollama to be running.
+- **`backend/llm/base.py`** — `LLMProvider` ABC with a single abstract method `complete(prompt) -> str`.
+- **`backend/llm/ollama.py`** — `OllamaProvider`: httpx POST to Ollama `/api/generate`, non-streaming.
+- **`backend/llm/hosted_stub.py`** — `HostedProvider`: raises `NotImplementedError` until prod credentials are wired up.
+- **`.env.example`** updated with `LLM_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`.
+- **`docs/02_decisions_log.md`** updated with decision #11 (LLM provider abstraction).
+- **`README.md`** updated with backend install, run, and health-check instructions.
+- Import check: `python -c "from backend.main import app"` passes (requires deps installed).
+- `/health` confirmed reachable at `http://localhost:8000/health` when server is running.
+
 ## Up next
 
-### Backend skeleton — `backend/`
+### Analytics agent standalone script — `backend/analytics/`
 
-Core Python package structure and dependency setup:
-- `pyproject.toml` or `requirements.txt` with initial dependencies (FastAPI, psycopg2/asyncpg, chromadb, httpx for Ollama)
-- Provider abstraction layer: a minimal `LLMProvider` interface with a local Ollama adapter and a stub hosted adapter
-- Initial FastAPI app entry point with a `/health` endpoint
+Build the NL→SQL pipeline as a standalone, runnable script before wiring it into FastAPI:
 
-This sets up the foundation before building the analytics agent (NL→SQL) or the document pipeline (chunking + ChromaDB ingestion).
+- Connect to Postgres as the `analytics_reader` role (read-only, `retail` schema only).
+- Accept a natural-language question, call `LLMProvider.complete()` to generate SQL, execute it, return the result in plain language.
+- Test against the seed data using the five demo patterns from `docs/06_seed_expectations.md`.
+- **Hard rule:** the `analytics_reader` role must be used for all queries — never `postgres` or any role with write access.
+- Add a decision log entry for the NL→SQL prompting strategy once it is chosen.

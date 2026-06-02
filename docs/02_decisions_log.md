@@ -87,3 +87,13 @@ Local development uses a `postgres:16` container managed by `docker-compose.yml`
 **Why Supabase for prod.** Supabase provides managed Postgres with connection pooling (pgBouncer), row-level security hooks, and a dashboard for quick data inspection — useful during demo and interview settings. It is also free at the scale of this project. The alternative (self-hosted Postgres on a VPS) adds operational overhead with no benefit for a portfolio project.
 
 **Why not Docker in prod.** Keeping prod infra out of scope means the portfolio project stays focused on the AI/backend code. Supabase abstracts the database operations layer away.
+
+---
+
+## 11. LLM provider abstraction: ABC interface with Ollama adapter and hosted stub
+
+All LLM calls go through a single `LLMProvider` ABC defined in `backend/llm/base.py`. Local development uses `OllamaProvider` (httpx calls to a local Ollama instance). Production swaps in a hosted adapter. A `HostedProvider` stub raises `NotImplementedError` until prod credentials are wired up.
+
+**Why.** A single interface means agents never import Ollama or Anthropic directly — they depend only on the abstraction. Swapping providers for prod is a one-line config change (`LLM_PROVIDER=hosted`), not a code change. Using an ABC (rather than Protocol) makes the contract explicit: any subclass that omits `complete()` fails at class-definition time, not at runtime.
+
+**Why httpx for the Ollama adapter.** httpx is sync/async-capable, is the standard HTTP client in the FastAPI ecosystem, and is already a transitive dependency of many FastAPI projects. Adding requests would be redundant.

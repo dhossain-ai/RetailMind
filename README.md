@@ -76,6 +76,44 @@ docker compose up -d
 
 ---
 
+## Backend
+
+The backend is a FastAPI application in `backend/`.
+
+### Prerequisites
+
+- Python 3.11+
+- [pip](https://pip.pypa.io/) or a virtual-environment manager
+
+### Install dependencies
+
+```bash
+# From the repo root — creates an editable install of the backend package
+pip install -e .
+```
+
+### Run the API server
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+The server starts on `http://localhost:8000` by default.
+
+### Test the health endpoint
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok","env":"dev","version":"0.1.0"}
+```
+
+Or open `http://localhost:8000/docs` in a browser for the auto-generated OpenAPI UI.
+
+> **Ollama not required for /health.** The health endpoint returns app status only.
+> Ollama needs to be running only when an agent actually calls `LLMProvider.complete()`.
+
+---
+
 ## Folder layout
 
 ```
