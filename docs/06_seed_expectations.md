@@ -103,10 +103,11 @@ ORDER BY revenue DESC;
 -- Measuring share (%) rather than absolute revenue means the December
 -- spike — which lifts all categories equally — does not contaminate the
 -- baseline used for comparison.
+-- COALESCE ensures months with zero Household sales show 0.0% rather than NULL.
 SELECT date_trunc('month', sale_date)                              AS month,
        ROUND(
            100.0
-           * SUM(revenue) FILTER (WHERE c.name = 'Household')
+           * COALESCE(SUM(revenue) FILTER (WHERE c.name = 'Household'), 0)
            / SUM(revenue),
        1)                                                          AS household_pct
 FROM retail.sales s
@@ -116,6 +117,7 @@ WHERE sale_date >= '2025-10-01'
 GROUP BY 1
 ORDER BY 1;
 -- Expect: ~15-17% in Oct 2025–Feb 2026, collapsing to ~2% in Mar–May 2026
+--         (small samples may reach 0.0% — the collapse is the signal, not the exact floor)
 
 
 -- ── 6. Coffee Beans price history ────────────────────────────────────────

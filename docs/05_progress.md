@@ -20,6 +20,21 @@
   5. Coffee Beans price snapshot (8.50 before 2025-07-01, 11.99 from then on)
 - **`docs/06_seed_expectations.md`** — Answer key for each demo pattern, with 6 verification SQL queries to confirm the patterns are present in the data.
 
+### 2026-06-02 — Seed verification
+
+All 6 verification queries from `docs/06_seed_expectations.md` run against the live Docker container and passed:
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | Row count and date range | 4,990 rows, 2024-06-01 – 2026-05-31 ✓ |
+| 2 | Coffee Beans top by units | 2,110 units — 4.65× the next product ✓ |
+| 3 | December seasonal spike | Dec 2024 = 2.0×, Dec 2025 = 1.95× adjacent months ✓ |
+| 4 | Warsaw underperforms | 3,696 revenue / 416 rows — ~36% of each other store ✓ |
+| 5 | Household share collapse | Baseline ~14–23% Oct–Feb; drops to 1.0%, 0.0%, 0.2% in Mar–May 2026 ✓ |
+| 6 | Coffee Beans price history | 8.50 through 2025-06-29, 11.99 from 2025-07-02 ✓ |
+
+Q5 query updated: `COALESCE(..., 0)` added around the filtered Household SUM so zero-sales months return `0.0%` instead of `NULL`.
+
 ## Up next
 
 ### Backend skeleton — `backend/`
