@@ -107,3 +107,19 @@ The analytics agent uses a hardcoded string in `backend/analytics/schema_context
 **Why static schema context.** The `retail` schema is stable and known at design time. Querying `information_schema` on every request adds a DB round-trip in the prompt path, complexity, and the risk of exposing internal schema metadata to the LLM unnecessarily. A hardcoded context is faster, simpler, and can include human-authored business-term definitions (e.g. what "top-selling" means) that `information_schema` cannot provide. When the schema changes, the context is updated alongside the migration.
 
 **Why a SQL validator.** The validator is defense-in-depth. It rejects obviously dangerous SQL (DML/DDL keywords, `app.` schema references, system catalog access, multiple statements) before the query reaches the database, providing a fast fail with a clear error message. It is not the primary security boundary — Decision #1 establishes that `analytics_reader` physically cannot reach `app.*` at the database layer regardless of what SQL is generated. The validator and the role together form a layered defence: the validator catches obvious cases quickly, and the database role stops anything that slips through.
+
+---
+
+## 13. Document agent: PyMuPDF + sentence-transformers + ChromaDB; no LangChain in v1
+
+PDF extraction uses PyMuPDF (`fitz`). Embedding uses `sentence-transformers` with `all-MiniLM-L6-v2` (384-dim, ~23 MB, CPU-only). Vector storage uses ChromaDB with a persistent local client and cosine distance.
+
+**Why PyMuPDF.** It is a pure-Python + compiled-C library with no external service dependency. It extracts text page by page with page-number metadata in a single call, which is exactly what the chunker needs. It is also the library already chosen for the generator script (`scripts/generate_sample_doc.py`), so no extra dependency is introduced.
+
+**Why sentence-transformers + all-MiniLM-L6-v2.** Local embeddings require no API key and no network round-trip. `all-MiniLM-L6-v2` is one of the most widely cited small embedding models: 384 dimensions, 23 MB on disk, strong benchmark scores on semantic similarity tasks relative to its size. The model is lazy-loaded once per process so the startup cost is paid only when the first embed call arrives.
+
+**Why ChromaDB.** Decision #6 already specified ChromaDB as the vector store. It provides a persistent local client with no server process, approximate nearest-neighbour search out of the box, and a simple Python API. The collection is created with `hnsw:space=cosine` so the distance metric matches what the embedding model optimises for. With cosine distance, Chroma returns `distance = 1 - cosine_similarity` (range 0–2; lower = more similar); this is documented inline in `vectorstore.py`.
+
+**Why not LangChain or LlamaIndex in v1.** The pipeline is five steps: extract → chunk → embed → store / embed → retrieve → prompt → LLM. Each step is a function with a clear input and output. An orchestration framework would hide these steps behind abstractions, making the pipeline harder to explain in an interview and harder to debug when a step produces unexpected output. The three focused libraries cover the steps with no magic. LangChain or LlamaIndex can be added later if the pipeline grows complex enough to justify them.
+
+**Retrieval honesty — no hardcoded threshold.** Chroma always returns the top-k nearest neighbours regardless of how poor the match is. Rather than picking a magic distance cutoff, the agent instructs the LLM to answer "I cannot find that information in the available documents" if the retrieved context does not contain a relevant answer. The LLM makes the relevance judgement from the text, which is more reliable than a distance threshold whose meaning depends on the specific model and collection. If the collection is empty (no documents ingested), the agent returns a plain message before calling the LLM at all.

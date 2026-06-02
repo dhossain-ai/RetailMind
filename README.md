@@ -201,6 +201,73 @@ The top-selling product is Coffee Beans, with a total of 2,110 units sold.
 
 ---
 
+## Document agent (CLI)
+
+The document agent ingests PDFs into ChromaDB and answers natural-language questions
+by retrieving relevant chunks and passing them to the LLM.
+
+### Prerequisites
+
+- Ollama running with `qwen2.5-coder:7b` pulled
+- Docker Postgres running (`docker compose up -d`) — used to store document metadata in `app.documents`
+- `.env` file present (see `.env.example`); `CHROMA_PATH`, `EMBEDDING_MODEL`, and `DOCUMENT_TOP_K` have sensible defaults
+
+### Ingest a PDF
+
+```bash
+py -3.11 -m backend.documents.cli ingest data/sample_docs/sample_policy.pdf
+```
+
+Example output:
+
+```
+Ingesting: data/sample_docs/sample_policy.pdf
+------------------------------------------------------------------------
+Document ID : 1
+Chunks      : 13
+------------------------------------------------------------------------
+Ingestion complete. Run a query to test retrieval.
+```
+
+The first run downloads the embedding model (~23 MB). Subsequent runs use the cached model.
+ChromaDB data is persisted to `data/chroma/` (git-ignored).
+
+### Query over ingested documents
+
+```bash
+py -3.11 -m backend.documents.cli query "What is the return policy?"
+```
+
+Example output:
+
+```
+Question: What is the return policy?
+
+------------------------------------------------------------------------ Answer
+Customers may return any unused, undamaged product within 30 days of purchase
+with a valid receipt for a full refund. Holiday purchases (1 Nov–31 Dec) have
+a 60-day window. Perishable items and digital downloads are non-returnable.
+Defective goods may be returned within 90 days with proof of defect.
+
+------------------------------------------------------------------------ Sources
+  [sample_policy.pdf, page 2, chunk 0]
+  [sample_policy.pdf, page 2, chunk 1]
+  ...
+------------------------------------------------------------------------
+```
+
+If the question cannot be answered from the ingested documents, the agent responds:
+
+```
+I cannot find that information in the available documents.
+```
+
+> **Note.** The agent does not use a distance threshold to filter weak results.
+> It instructs the LLM to refuse if the retrieved context does not contain an answer.
+> This is explained in Decision #13 of `docs/02_decisions_log.md`.
+
+---
+
 ## Folder layout
 
 ```
@@ -211,6 +278,14 @@ RetailMind/
 │   │   ├── sql_validator.py   # static SQL safety checks
 │   │   ├── db.py              # query runner (analytics_reader role only)
 │   │   ├── agent.py           # LLM pipeline: question → SQL → answer
+│   │   └── cli.py             # command-line entry point
+│   ├── documents/        # PDF ingestion and document Q&A agent
+│   │   ├── extract.py         # page-by-page PDF text extraction (PyMuPDF)
+│   │   ├── chunking.py        # character-based text chunking
+│   │   ├── embeddings.py      # sentence-transformers embeddings (all-MiniLM-L6-v2)
+│   │   ├── vectorstore.py     # ChromaDB persistence (cosine distance)
+│   │   ├── db.py              # app.documents metadata (DATABASE_URL, postgres role)
+│   │   ├── agent.py           # ingest() and run() pipeline
 │   │   └── cli.py             # command-line entry point
 │   ├── llm/              # LLM provider abstraction (Ollama + hosted stub)
 │   ├── config.py         # pydantic-settings config
