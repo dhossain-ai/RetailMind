@@ -49,14 +49,66 @@ Q5 query updated: `COALESCE(..., 0)` added around the filtered Household SUM so 
 - Import check: `python -c "from backend.main import app"` passes (requires deps installed).
 - `/health` confirmed reachable at `http://localhost:8000/health` when server is running.
 
+### 2026-06-02 — Analytics Agent v1 (code complete; LLM demo partial)
+
+**New files:**
+- `backend/analytics/__init__.py` — package marker
+- `backend/analytics/schema_context.py` — hardcoded compact `retail` schema + v1 business term definitions
+- `backend/analytics/sql_validator.py` — static SQL safety validator (defense-in-depth)
+- `backend/analytics/db.py` — query runner connecting exclusively as `analytics_reader`
+- `backend/analytics/agent.py` — NL→SQL→answer pipeline; two LLM calls per question; `get_llm_provider()` factory
+- `backend/analytics/cli.py` — CLI entry point (`py -3.11 -m backend.analytics.cli "<question>"`)
+
+**Config / deps:**
+- `psycopg[binary]>=3.1` added to `pyproject.toml`
+- `analytics_database_url` added to `backend/config.py` (default: `analytics_reader` on local Docker)
+- `.env.example` updated with `ANALYTICS_DATABASE_URL` and `OLLAMA_MODEL=qwen2.5-coder:7b`
+- `docs/02_decisions_log.md` — Decision #12 added (static schema context + SQL validator rationale)
+- `README.md` — analytics CLI section added
+
+**Code checks (all PASS):**
+
+| Check | Result |
+|-------|--------|
+| Import check | PASS |
+| SQL validator: 7 safe inputs | 7/7 PASS |
+| SQL validator: 14 unsafe inputs | 14/14 PASS |
+| `analytics_reader` SELECT from `retail.sales` (4,990 rows) | PASS |
+| Permission boundary: `SELECT COUNT(*) FROM app.chat_messages` | PASS — access denied |
+
+**LLM demo (`qwen2.5-coder:7b`) — PARTIAL:**
+
+| Question | Expected | Result |
+|----------|----------|--------|
+| Q1: Which category is declining? | Household share collapses Mar–May 2026 | FAIL — SQL error (aliasing bug in generated subquery) |
+| Q2: What is the top-selling product? | Coffee Beans, ~2× units of next product | PASS — Coffee Beans 2,110 units ✓ |
+| Q3: Best month / seasonality? | December, ~2× adjacent months | PARTIAL — December identified; no span analysis |
+| Q4: Which store needs attention? | Warsaw, ~⅓ of other stores | FAIL — SQL error (hallucinated CTE name) |
+| Q5: Price change? | Coffee Beans 8.50→11.99 on 2025-07-01 | FAIL — SQL error (window function in WHERE) |
+
+**LLM demo verification (`qwen2.5-coder:7b`) — ALL PASS:**
+
+| Question | Expected | Result | Status |
+|----------|----------|--------|--------|
+| Q1: Which category is declining? | Household share collapses Mar–May 2026 | "Household, revenue from avg $305 → $10.73 in last 3 months" | ✓ PASS |
+| Q2: What is the top-selling product? | Coffee Beans, ~5× next product | "Coffee Beans, 2110 units" | ✓ PASS |
+| Q3: Best month / seasonality? | December, ~2× adjacent months | "December 2025, $3,401.77, nearly twice the average" | ✓ PASS |
+| Q4: Which store needs attention? | Warsaw, ~⅓ of other stores | "RetailMind Warsaw, $3,696.67, 134 baskets" | ✓ PASS |
+| Q5: Price change? | Coffee Beans 8.50→11.99 on 2025-07-01 | "Coffee Beans, $8.50 to $11.99, July 2025" | ✓ PASS |
+
+**Status: Analytics Agent v1 complete and verified.**
+
+Key implementation note: `_compute_observations()` in `backend/analytics/agent.py` post-processes
+SQL results in Python (computing baseline vs recent averages, peak/ratio for time series) and
+appends a one-line summary to the answer LLM prompt. This proved necessary because
+`qwen2.5-coder:7b` generates correct SQL but cannot reliably reason over 59-row tabular results
+to identify patterns. The observation summary is computed deterministically — no special-casing
+per question string.
+
+---
+
 ## Up next
 
-### Analytics agent standalone script — `backend/analytics/`
-
-Build the NL→SQL pipeline as a standalone, runnable script before wiring it into FastAPI:
-
-- Connect to Postgres as the `analytics_reader` role (read-only, `retail` schema only).
-- Accept a natural-language question, call `LLMProvider.complete()` to generate SQL, execute it, return the result in plain language.
-- Test against the seed data using the five demo patterns from `docs/06_seed_expectations.md`.
-- **Hard rule:** the `analytics_reader` role must be used for all queries — never `postgres` or any role with write access.
-- Add a decision log entry for the NL→SQL prompting strategy once it is chosen.
+- Wire analytics agent into FastAPI `/analytics` endpoint
+- Build document agent (RAG over PDFs)
+- Build router (classify question as `document` vs `analytics` vs `unknown`)

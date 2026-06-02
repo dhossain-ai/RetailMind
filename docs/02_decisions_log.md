@@ -97,3 +97,13 @@ All LLM calls go through a single `LLMProvider` ABC defined in `backend/llm/base
 **Why.** A single interface means agents never import Ollama or Anthropic directly — they depend only on the abstraction. Swapping providers for prod is a one-line config change (`LLM_PROVIDER=hosted`), not a code change. Using an ABC (rather than Protocol) makes the contract explicit: any subclass that omits `complete()` fails at class-definition time, not at runtime.
 
 **Why httpx for the Ollama adapter.** httpx is sync/async-capable, is the standard HTTP client in the FastAPI ecosystem, and is already a transitive dependency of many FastAPI projects. Adding requests would be redundant.
+
+---
+
+## 12. Static schema context and SQL validator for Analytics Agent v1
+
+The analytics agent uses a hardcoded string in `backend/analytics/schema_context.py` to describe the `retail` schema to the LLM, rather than querying `information_schema` at runtime. A lightweight SQL validator in `backend/analytics/sql_validator.py` checks the generated SQL before it reaches the database.
+
+**Why static schema context.** The `retail` schema is stable and known at design time. Querying `information_schema` on every request adds a DB round-trip in the prompt path, complexity, and the risk of exposing internal schema metadata to the LLM unnecessarily. A hardcoded context is faster, simpler, and can include human-authored business-term definitions (e.g. what "top-selling" means) that `information_schema` cannot provide. When the schema changes, the context is updated alongside the migration.
+
+**Why a SQL validator.** The validator is defense-in-depth. It rejects obviously dangerous SQL (DML/DDL keywords, `app.` schema references, system catalog access, multiple statements) before the query reaches the database, providing a fast fail with a clear error message. It is not the primary security boundary — Decision #1 establishes that `analytics_reader` physically cannot reach `app.*` at the database layer regardless of what SQL is generated. The validator and the role together form a layered defence: the validator catches obvious cases quickly, and the database role stops anything that slips through.

@@ -6,9 +6,10 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"
     database_url: str = "postgresql://postgres:retailmind_dev@localhost:5432/retailmind"
+    analytics_database_url: str = "postgresql://analytics_reader:change_me@localhost:5432/retailmind"
     llm_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2"
+    ollama_model: str = "qwen2.5-coder:7b"
 
 
 settings = Settings()

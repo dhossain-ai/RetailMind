@@ -114,16 +114,73 @@ Or open `http://localhost:8000/docs` in a browser for the auto-generated OpenAPI
 
 ---
 
+## Analytics agent (CLI)
+
+The analytics agent answers natural-language retail questions by generating SQL,
+executing it against Postgres as `analytics_reader`, and returning a plain-English answer.
+
+### Prerequisites
+
+- Docker Postgres running (`docker compose up -d`)
+- Ollama running with `qwen2.5-coder:7b` pulled:
+  ```bash
+  ollama pull qwen2.5-coder:7b
+  ```
+- `.env` file present with `ANALYTICS_DATABASE_URL` set (see `.env.example`)
+
+### Run a question
+
+```bash
+py -3.11 -m backend.analytics.cli "What is the top-selling product?"
+```
+
+Example output:
+
+```
+Question: What is the top-selling product?
+
+─── Generated SQL ────────────────────────────────────────────────────────────
+SELECT retail.products.name AS top_selling_product_name,
+       SUM(retail.sales.quantity) AS total_units_sold
+FROM retail.sales
+JOIN retail.products ON retail.sales.product_id = retail.products.id
+GROUP BY retail.products.name
+ORDER BY total_units_sold DESC
+LIMIT 1
+
+─── Result ───────────────────────────────────────────────────────────────────
+Columns: ['top_selling_product_name', 'total_units_sold']
+Coffee Beans	2110
+
+─── Answer ───────────────────────────────────────────────────────────────────
+The top-selling product is Coffee Beans, with a total of 2,110 units sold.
+```
+
+> **Security note.** The CLI connects to Postgres as `analytics_reader`,
+> which has `SELECT` on `retail.*` only. Generated SQL cannot read
+> `app.chat_messages` or `app.documents` even if the question attempts it.
+
+---
+
 ## Folder layout
 
 ```
 RetailMind/
-├── backend/          # Python API server, agents, provider abstraction
-├── frontend/         # Web UI (framework TBD)
+├── backend/
+│   ├── analytics/        # NL→SQL analytics agent
+│   │   ├── schema_context.py  # compact retail schema + business term definitions
+│   │   ├── sql_validator.py   # static SQL safety checks
+│   │   ├── db.py              # query runner (analytics_reader role only)
+│   │   ├── agent.py           # LLM pipeline: question → SQL → answer
+│   │   └── cli.py             # command-line entry point
+│   ├── llm/              # LLM provider abstraction (Ollama + hosted stub)
+│   ├── config.py         # pydantic-settings config
+│   └── main.py           # FastAPI app + /health endpoint
+├── frontend/             # Web UI (framework TBD)
 ├── data/
-│   └── sample_docs/  # Sample PDFs for local development
-├── docs/             # Architecture docs, decisions log, progress notes
-├── scripts/          # SQL migrations run by Docker on first boot
+│   └── sample_docs/      # Sample PDFs for local development
+├── docs/                 # Architecture docs, decisions log, progress notes
+├── scripts/              # SQL migrations run by Docker on first boot
 │   ├── 001_schema.sql
 │   └── 002_seed.sql
 ├── docker-compose.yml
