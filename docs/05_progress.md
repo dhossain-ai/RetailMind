@@ -105,10 +105,40 @@ appends a one-line summary to the answer LLM prompt. This proved necessary becau
 to identify patterns. The observation summary is computed deterministically — no special-casing
 per question string.
 
+### 2026-06-03 — Analytics API endpoint
+
+**Changed file:**
+- `backend/main.py` — added `AnalyticsRequest` and `AnalyticsResponse` Pydantic models; added `POST /analytics` endpoint that calls the existing `backend.analytics.agent.run()` pipeline
+
+**No other files modified.** All analytics logic (`agent.py`, `db.py`, `sql_validator.py`, `schema_context.py`) is unchanged.
+
+**Checks (all PASS):**
+
+| Check | Result |
+|-------|--------|
+| Import check: `from backend.main import app` | PASS |
+| `GET /health` | `{"status":"ok","env":"dev","version":"0.1.0"}` ✓ |
+| `POST /analytics` — "What is the top-selling product?" | Coffee Beans, 2110 units ✓ |
+
+**POST /analytics response shape:**
+```json
+{
+  "question": "...",
+  "sql": "...",
+  "columns": [...],
+  "rows": [...],
+  "answer": "..."
+}
+```
+
+**Error handling:**
+- `400` — `ValueError` from SQL validator (safe message, no stack trace)
+- `503` — `psycopg.Error` (database unavailable)
+- `503` — `httpx.HTTPError` (Ollama unavailable)
+
 ---
 
 ## Up next
 
-- Wire analytics agent into FastAPI `/analytics` endpoint
 - Build document agent (RAG over PDFs)
 - Build router (classify question as `document` vs `analytics` vs `unknown`)

@@ -112,6 +112,45 @@ Or open `http://localhost:8000/docs` in a browser for the auto-generated OpenAPI
 > **Ollama not required for /health.** The health endpoint returns app status only.
 > Ollama needs to be running only when an agent actually calls `LLMProvider.complete()`.
 
+### Analytics endpoint
+
+`POST /analytics` accepts a natural-language question and returns generated SQL, the raw result set, and a plain-English answer.
+
+**curl:**
+
+```bash
+curl -s -X POST http://localhost:8000/analytics \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the top-selling product?"}'
+```
+
+**PowerShell:**
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/analytics `
+  -ContentType "application/json" `
+  -Body '{"question": "What is the top-selling product?"}'
+```
+
+Example response:
+
+```json
+{
+  "question": "What is the top-selling product?",
+  "sql": "SELECT p.name AS product_name, SUM(s.quantity) AS total_quantity_sold\nFROM retail.sales s\nJOIN retail.products p ON s.product_id = p.id\nGROUP BY 1\nORDER BY 2 DESC\nLIMIT 1",
+  "columns": ["product_name", "total_quantity_sold"],
+  "rows": [["Coffee Beans", 2110]],
+  "answer": "The top-selling product is Coffee Beans, with a total quantity of 2110 sold."
+}
+```
+
+> **Requires Ollama + Docker Postgres.** The endpoint calls `qwen2.5-coder:7b` to generate
+> SQL and the answer. It connects to Postgres as `analytics_reader` (SELECT on `retail.*` only).
+>
+> **Error responses:**
+> - `400` — SQL validation failed (generated SQL was rejected before hitting the DB)
+> - `503` — Database or LLM service unavailable
+
 ---
 
 ## Analytics agent (CLI)
