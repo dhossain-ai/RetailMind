@@ -24,6 +24,9 @@ dist/
 # ChromaDB — local vector store (generated at runtime, not committed)
 data/chroma/
 
+# Uploaded PDFs — user-supplied runtime files, not committed
+data/uploads/
+
 # OS
 .DS_Store
 Thumbs.db

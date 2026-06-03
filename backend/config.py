@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     chroma_path: str = "data/chroma"
     embedding_model: str = "all-MiniLM-L6-v2"
     document_top_k: int = 5
+    uploads_path: str = "data/uploads"
 
 
 settings = Settings()

@@ -1,13 +1,19 @@
+import uuid
+from pathlib import Path
+
 import httpx
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
 from pydantic import BaseModel
 
-import backend.analytics.agent as agent
+import backend.analytics.agent as analytics_agent
+import backend.documents.agent as document_agent
 from backend.config import settings
 
 app = FastAPI(title="RetailMind API", version="0.1.0")
 
+
+# ── Analytics models ───────────────────────────────────────────────────────────
 
 class AnalyticsRequest(BaseModel):
     question: str
@@ -21,6 +27,28 @@ class AnalyticsResponse(BaseModel):
     answer: str
 
 
+# ── Document models ────────────────────────────────────────────────────────────
+
+class DocumentUploadResponse(BaseModel):
+    document_id: int
+    filename: str
+    original_filename: str
+    chunk_count: int
+    status: str
+
+
+class DocumentQueryRequest(BaseModel):
+    question: str
+
+
+class DocumentQueryResponse(BaseModel):
+    question: str
+    answer: str
+    sources: list[str]
+
+
+# ── Health ─────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     return {
@@ -30,11 +58,13 @@ def health():
     }
 
 
+# ── Analytics ──────────────────────────────────────────────────────────────────
+
 @app.post("/analytics", response_model=AnalyticsResponse)
 def analytics(req: AnalyticsRequest):
-    llm = agent.get_llm_provider()
+    llm = analytics_agent.get_llm_provider()
     try:
-        result = agent.run(req.question, llm)
+        result = analytics_agent.run(req.question, llm)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"SQL validation failed: {exc}")
     except psycopg.Error:
@@ -42,3 +72,51 @@ def analytics(req: AnalyticsRequest):
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="LLM service unavailable.")
     return AnalyticsResponse(question=req.question, **result)
+
+
+# ── Documents ──────────────────────────────────────────────────────────────────
+
+@app.post("/documents/upload", response_model=DocumentUploadResponse)
+async def documents_upload(file: UploadFile):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+    uploads_dir = Path(settings.uploads_path)
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    prefix = uuid.uuid4().hex[:8]
+    safe_name = f"{prefix}_{file.filename}"
+    dest = uploads_dir / safe_name
+
+    contents = await file.read()
+    dest.write_bytes(contents)
+
+    try:
+        result = document_agent.ingest(dest)
+    except psycopg.Error:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    except httpx.HTTPError:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+
+    status = "skipped" if result.get("skipped") else "ingested"
+    return DocumentUploadResponse(
+        document_id=result["document_id"],
+        filename=safe_name,
+        original_filename=file.filename,
+        chunk_count=result["chunk_count"],
+        status=status,
+    )
+
+
+@app.post("/documents/query", response_model=DocumentQueryResponse)
+def documents_query(req: DocumentQueryRequest):
+    try:
+        result = document_agent.run(req.question)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    return DocumentQueryResponse(question=req.question, **result)
