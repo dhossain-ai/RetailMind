@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 import backend.analytics.agent as analytics_agent
 import backend.documents.agent as document_agent
+import backend.router as router
 from backend.config import settings
 
 app = FastAPI(title="RetailMind API", version="0.1.0")
@@ -45,6 +46,21 @@ class DocumentQueryResponse(BaseModel):
     question: str
     answer: str
     sources: list[str]
+
+
+# ── Chat models ───────────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    route: str
+    answer: str
+    sql: str | None = None
+    columns: list[str] | None = None
+    rows: list[list] | None = None
+    sources: list[str] | None = None
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
@@ -120,3 +136,41 @@ def documents_query(req: DocumentQueryRequest):
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="LLM service unavailable.")
     return DocumentQueryResponse(question=req.question, **result)
+
+
+# ── Chat ───────────────────────────────────────────────────────────────────────
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    route = router.classify(req.message)
+
+    if route == "analytics":
+        llm = analytics_agent.get_llm_provider()
+        try:
+            result = analytics_agent.run(req.message, llm)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"SQL validation failed: {exc}")
+        except psycopg.Error:
+            raise HTTPException(status_code=503, detail="Database unavailable.")
+        except httpx.HTTPError:
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        return ChatResponse(
+            route="analytics",
+            answer=result["answer"],
+            sql=result["sql"],
+            columns=result["columns"],
+            rows=result["rows"],
+        )
+
+    if route == "document":
+        try:
+            result = document_agent.run(req.message)
+        except httpx.HTTPError:
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        return ChatResponse(
+            route="document",
+            answer=result["answer"],
+            sources=result["sources"],
+        )
+
+    return ChatResponse(route="unknown", answer=router.UNKNOWN_ANSWER)
