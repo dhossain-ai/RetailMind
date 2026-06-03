@@ -295,8 +295,74 @@ Design note: "store operating hours" correctly routes to document (a=1, d=4) —
 
 ---
 
+### 2026-06-03 — Frontend-backend integration (CORS)
+
+**Changed files:**
+- `backend/config.py` — added `cors_origins: list[str]` setting (default: `localhost:3000` and `127.0.0.1:3000`); reads from `CORS_ORIGINS` env var (expects JSON array string)
+- `backend/main.py` — added `CORSMiddleware` using `settings.cors_origins`; `allow_methods=["GET","POST"]`, `allow_headers=["Content-Type"]`; no wildcard origins
+- `.env.example` — documented `CORS_ORIGINS` with warning against `"*"` in production and example production value
+
+**Root cause:** Browser sends an OPTIONS preflight before every cross-origin POST. Without `CORSMiddleware`, FastAPI returned `405 Method Not Allowed` for OPTIONS, blocking all requests from the frontend at `http://localhost:3000`.
+
+**Import check:** PASS
+
+**CORS preflight verification:**
+```
+OPTIONS /chat (Origin: http://localhost:3000)
+  → HTTP 200
+  → access-control-allow-origin: http://localhost:3000
+  → access-control-allow-methods: GET, POST
+```
+
+**Endpoint spot checks:**
+
+| Check | Result |
+|-------|--------|
+| `GET /health` | `{"status":"ok","env":"dev","version":"0.1.0"}` ✓ |
+| `POST /chat` → document ("What is the return policy?") | `route=document`, 30-day policy + citations ✓ |
+| `POST /chat` → unknown ("What is the capital of France?") | `route=unknown`, helpful fallback ✓ |
+| `POST /chat` → analytics ("What is the top-selling product?") | See eval results below |
+
+**Note on analytics 503 during parallel tests:** When the document `/chat` test (which cold-loads the sentence-transformers embedding model) ran in parallel with the analytics `/chat` test, the analytics LLM call hit the 60-second httpx timeout while Ollama was backlogged. This is a resource-contention artefact of firing all three queries simultaneously in testing — not a CORS issue and not a regression. The sequential eval run below confirms analytics works correctly.
+
+**Frontend lint:** `npm run lint` — PASS (no output = no errors)
+
+**Frontend build:** `npm run build` — PASS
+```
+▲ Next.js 16.2.7 (Turbopack)
+✓ Compiled successfully in 2.6s
+✓ Generating static pages (4/4)
+Route (app): / (Static)
+```
+
+**Eval results (`py -3.11 scripts/eval_all.py`):**
+
+| Suite | Result |
+|-------|--------|
+| Router: 7 classification cases | 7/7 PASS |
+| Analytics: security boundary (retail.sales readable, app.chat_messages denied) | 2/2 PASS |
+| Analytics: declining category | PASS |
+| Analytics: top-selling product (Coffee Beans, 2,110 units) | PASS |
+| Analytics: best month / seasonality (December 2025) | PASS |
+| Analytics: store needing attention (Warsaw) | PASS |
+| Analytics: price change (Coffee Beans 8.50→11.99) | PASS |
+| Document: return policy (30 days + citations) | PASS |
+| Document: supplier vetting (4 steps + citations) | PASS |
+| Document: store hours (hours + citations) | PASS |
+| Document: unrelated question (honest refusal) | PASS |
+| API: GET /health | PASS |
+| API: POST /chat → analytics | PASS |
+| API: POST /chat → document | PASS |
+| API: POST /chat → unknown | PASS |
+| **TOTAL** | **22/22** |
+
+**Note on first eval run:** The Postgres Docker container exited mid-run (unrelated infrastructure event), causing 2 analytics security checks to fail with connection timeout. After `docker start retailmind-db-1`, the second run produced 22/22.
+
+**Status: Frontend-backend integration verified. CORS enabled, all checks pass.**
+
+---
+
 ## Up next
 
-- Frontend (web UI) or prod environment wiring
 - Chat history / session management
 - Additional sample documents for richer document Q&A demo

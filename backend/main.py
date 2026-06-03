@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import psycopg
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import backend.analytics.agent as analytics_agent
@@ -12,6 +13,13 @@ import backend.router as router
 from backend.config import settings
 
 app = FastAPI(title="RetailMind API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 # ── Analytics models ───────────────────────────────────────────────────────────
