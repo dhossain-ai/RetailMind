@@ -181,7 +181,38 @@ per question string.
 
 ---
 
+### 2026-06-03 — Document API endpoints
+
+**Changed files:**
+- `backend/main.py` — added `DocumentUploadResponse`, `DocumentQueryRequest`, `DocumentQueryResponse` Pydantic models; added `POST /documents/upload` and `POST /documents/query` endpoints
+- `backend/config.py` — added `uploads_path` setting (default `data/uploads`)
+- `pyproject.toml` — declared `python-multipart>=0.0.9` explicitly (already installed as transitive dep)
+- `.env.example` — added `UPLOADS_PATH` with comment
+- `.gitignore` — added `data/uploads/`
+
+**No new modules created.** Both endpoints delegate entirely to the existing `backend.documents.agent.ingest()` and `backend.documents.agent.run()` — no logic duplication.
+
+**File handling:**
+- Uploaded PDFs saved to `data/uploads/{8-hex-chars}_{original_name}` — UUID prefix prevents silent overwrites and Chroma duplicate-ID collisions on re-upload of the same file
+- Non-PDF files rejected with `400` before any file is written to disk
+- On ingestion failure: saved file is deleted before the `5xx` response is returned
+
+**Checks (all PASS):**
+
+| Check | Result |
+|-------|--------|
+| Import check: `from backend.main import app` | PASS |
+| Routes registered | `/health`, `/analytics`, `/documents/upload`, `/documents/query` |
+| `GET /health` | `{"status":"ok","env":"dev","version":"0.1.0"}` |
+| `POST /analytics` regression | Coffee Beans, 2110 units ✓ |
+| `POST /documents/upload` — `sample_policy.pdf` | `document_id:2, chunk_count:13, status:ingested` ✓ |
+| `POST /documents/query` — "What is the return policy?" | Full policy with citations ✓ |
+| `POST /documents/query` — "What is the capital of France?" | Honest refusal ✓ |
+| Non-PDF upload | `400 Only PDF files are accepted.` ✓ |
+| `data/uploads/` not in `git status` | ✓ gitignored |
+
+---
+
 ## Up next
 
 - Build router (classify question as `document` vs `analytics` vs `unknown`)
-- Expose document agent via FastAPI (`POST /documents/ingest`, `POST /documents/query`)

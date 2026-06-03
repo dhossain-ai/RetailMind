@@ -268,6 +268,89 @@ I cannot find that information in the available documents.
 
 ---
 
+## Document agent (API)
+
+The same document pipeline is also available through the FastAPI server.
+
+### Prerequisites
+
+Same as the CLI: Ollama running, Docker Postgres running, `.env` present.
+The API server must be running:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+### Upload a PDF
+
+**curl:**
+
+```bash
+curl -s -X POST http://localhost:8000/documents/upload \
+  -F "file=@data/sample_docs/sample_policy.pdf"
+```
+
+**PowerShell:**
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/documents/upload `
+  -Form @{ file = Get-Item data/sample_docs/sample_policy.pdf }
+```
+
+Example response:
+
+```json
+{
+  "document_id": 2,
+  "filename": "95dad59c_sample_policy.pdf",
+  "original_filename": "sample_policy.pdf",
+  "chunk_count": 13,
+  "status": "ingested"
+}
+```
+
+Uploaded files are saved to `data/uploads/` with an 8-character hex prefix to avoid
+overwrites. `data/uploads/` is git-ignored. Only `.pdf` files are accepted; any other
+content type returns `400`.
+
+### Query over ingested documents
+
+**curl:**
+
+```bash
+curl -s -X POST http://localhost:8000/documents/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the return policy?"}'
+```
+
+**PowerShell:**
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/documents/query `
+  -ContentType "application/json" `
+  -Body '{"question": "What is the return policy?"}'
+```
+
+Example response:
+
+```json
+{
+  "question": "What is the return policy?",
+  "answer": "Customers may return any unused, undamaged product within 30 days ...",
+  "sources": [
+    "[sample_policy.pdf, page 2, chunk 0]",
+    "[sample_policy.pdf, page 2, chunk 1]"
+  ]
+}
+```
+
+> **Error responses:**
+> - `400` — uploaded file is not a PDF
+> - `503` — database or LLM service unavailable
+> - `500` — unexpected ingestion failure (uploaded file is cleaned up automatically)
+
+---
+
 ## Folder layout
 
 ```
