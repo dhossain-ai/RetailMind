@@ -213,6 +213,55 @@ per question string.
 
 ---
 
+### 2026-06-03 — Router v1 + unified POST /chat endpoint
+
+**New files:**
+- `backend/router.py` — deterministic weighted classifier; two (regex, weight) rule lists (analytics and document); strong multi-word phrases score 3, generic single keywords score 1; tie or both-zero → `unknown`; includes `__main__` self-test block
+
+**Changed files:**
+- `backend/main.py` — added `ChatRequest` / `ChatResponse` Pydantic models; added `POST /chat` endpoint that classifies with the router and delegates to the existing analytics or document agent; consistent response shape with nullable fields for unused domains; `unknown` route returns HTTP 200 with a helpful fallback message
+- `docs/02_decisions_log.md` — Decision #14: why deterministic keyword scoring over an LLM router
+- `README.md` — `/chat` endpoint section with curl + PowerShell examples and response table
+
+**Router self-test (7/7 PASS):**
+
+| Question | Expected | Score (a / d) | Result |
+|----------|----------|---------------|--------|
+| What is the top-selling product? | analytics | a=5 / d=0 | ✓ PASS |
+| Which category is declining? | analytics | a=5 / d=0 | ✓ PASS |
+| Which store needs attention? | analytics | a=4 / d=0 | ✓ PASS |
+| What is the return policy? | document | a=0 / d=5 | ✓ PASS |
+| What is the supplier vetting process? | document | a=0 / d=5 | ✓ PASS |
+| What are the store operating hours? | document | a=1 / d=4 | ✓ PASS |
+| What is the capital of France? | unknown | a=0 / d=0 | ✓ PASS |
+
+**Regression checks (all PASS):**
+
+| Check | Result |
+|-------|--------|
+| Import check: `from backend.main import app` | PASS |
+| `GET /health` | `{"status":"ok","env":"dev","version":"0.1.0"}` ✓ |
+| `POST /analytics` — "What is the top-selling product?" | Coffee Beans, 2,110 units ✓ |
+| `POST /documents/query` — "What is the return policy?" | Full policy with citations ✓ |
+
+**POST /chat test results (all PASS):**
+
+| # | Message | Expected route | Result route | Answer summary |
+|---|---------|----------------|--------------|----------------|
+| 1 | What is the top-selling product? | analytics | analytics | Coffee Beans, 2,110 units ✓ |
+| 2 | Which category is declining? | analytics | analytics | Household, −96.5% revenue ✓ |
+| 3 | What is the return policy? | document | document | 30-day window, holiday extension, exclusions + citations ✓ |
+| 4 | What is the supplier vetting process? | document | document | 4-step vetting process + citations ✓ |
+| 5 | What is the capital of France? | unknown | unknown | Helpful fallback, sql=null, sources=null ✓ |
+
+**Status: Router v1 and POST /chat complete and verified.**
+
+Design note: "store operating hours" correctly routes to document (a=1, d=4) — the strong "operating hours" phrase (+3) outweighs the generic "store" analytics match (+1). This confirms that weighted phrases prevent single-word ambiguity from misrouting.
+
+---
+
 ## Up next
 
-- Build router (classify question as `document` vs `analytics` vs `unknown`)
+- Frontend (web UI) or prod environment wiring
+- Chat history / session management
+- Additional sample documents for richer document Q&A demo

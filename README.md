@@ -351,6 +351,88 @@ Example response:
 
 ---
 
+## Unified chat endpoint
+
+`POST /chat` accepts any natural-language question and routes it automatically to the analytics agent or the document agent. The route is determined by a lightweight deterministic classifier — no extra LLM call.
+
+### curl
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is the top-selling product?"}'
+```
+
+### PowerShell
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/chat `
+  -ContentType "application/json" `
+  -Body '{"message": "What is the top-selling product?"}'
+```
+
+### Response shape
+
+The response always includes `route` and `answer`. Other fields are `null` when not applicable.
+
+| Field | analytics | document | unknown |
+|-------|-----------|----------|---------|
+| `route` | `"analytics"` | `"document"` | `"unknown"` |
+| `answer` | plain-English summary | grounded answer from documents | helpful fallback |
+| `sql` | generated SQL | `null` | `null` |
+| `columns` | column names | `null` | `null` |
+| `rows` | result rows | `null` | `null` |
+| `sources` | `null` | citation strings | `null` |
+
+**Analytics example:**
+
+```json
+{
+  "route": "analytics",
+  "answer": "The top-selling product is Coffee Beans, with 2,110 units sold.",
+  "sql": "SELECT p.name, SUM(s.quantity) ...",
+  "columns": ["product_name", "total_quantity_sold"],
+  "rows": [["Coffee Beans", 2110]],
+  "sources": null
+}
+```
+
+**Document example:**
+
+```json
+{
+  "route": "document",
+  "answer": "Customers may return any unused, undamaged product within 30 days ...",
+  "sql": null,
+  "columns": null,
+  "rows": null,
+  "sources": ["[sample_policy.pdf, page 2, chunk 0]", "..."]
+}
+```
+
+**Unknown example:**
+
+```json
+{
+  "route": "unknown",
+  "answer": "I can answer questions about uploaded documents or retail sales analytics. Please ask about a policy or document, or about sales, products, stores, or categories.",
+  "sql": null,
+  "columns": null,
+  "rows": null,
+  "sources": null
+}
+```
+
+> **Router:** Questions about sales, revenue, products, stores, categories, or trends → `analytics`.
+> Questions about policies, suppliers, store hours, or uploaded documents → `document`.
+> Unrecognised questions → `unknown` (HTTP 200, not an error).
+>
+> **Error responses:**
+> - `400` — analytics route: SQL validation failed
+> - `503` — database or LLM service unavailable
+
+---
+
 ## Folder layout
 
 ```
