@@ -433,6 +433,53 @@ The response always includes `route` and `answer`. Other fields are `null` when 
 
 ---
 
+## Evaluation
+
+The evaluation scripts verify the router, analytics agent, and document agent against the seeded demo data. Run them after any change to routing logic, agent prompts, or the database schema.
+
+### Run all checks
+
+```bash
+py -3.11 scripts/eval_all.py
+```
+
+This runs all three evaluations in sequence and prints a summary:
+
+```
+============================================================
+RetailMind - Evaluation v1
+============================================================
+...
+  Router:    7/7
+  Analytics: 7/7
+  Document:  4/4
+  API:       4/4  (or "skipped" if server not running)
+  ------------------------------
+  TOTAL:     22/22 passed
+============================================================
+```
+
+Exit code is 0 on full pass, 1 on any failure.
+
+**Prerequisites for full eval:**
+
+- Docker Postgres running: `docker compose up -d`
+- Ollama running with `qwen2.5-coder:7b` pulled
+- Sample policy ingested: `py -3.11 -m backend.documents.cli ingest data/sample_docs/sample_policy.pdf`
+  (or the eval script auto-ingests it if ChromaDB is empty)
+
+**API checks** (`GET /health`, `POST /chat` x3) are optional. They are silently skipped when the FastAPI server is not running and do not affect the exit code.
+
+### Individual scripts (for debugging)
+
+| Script | Dependencies | What it checks |
+|--------|-------------|----------------|
+| `py -3.11 scripts/eval_router.py` | none | 7 classification cases |
+| `py -3.11 scripts/eval_analytics.py` | Postgres + Ollama | 2 security checks + 5 seeded Q&A |
+| `py -3.11 scripts/eval_documents.py` | ChromaDB + Postgres + Ollama | 4 document Q&A + source citations |
+
+---
+
 ## Folder layout
 
 ```

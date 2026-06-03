@@ -260,6 +260,41 @@ Design note: "store operating hours" correctly routes to document (a=1, d=4) —
 
 ---
 
+### 2026-06-03 — Evaluation v1
+
+**New files:**
+- `scripts/eval_router.py` — 7 classification checks; no external dependencies
+- `scripts/eval_analytics.py` — 2 DB security checks + 5 seeded demo question checks (structured rows + answer key-facts); requires Postgres + Ollama
+- `scripts/eval_documents.py` — 4 document Q&A checks with source citation validation; auto-ingests `sample_policy.pdf` if ChromaDB is empty; requires Postgres + Ollama
+- `scripts/eval_all.py` — runs all three in sequence plus 4 optional API checks (GET /health, POST /chat x3); API checks skipped without server; exits non-zero on any real failure
+
+**Design note:** Decision #15 (see `docs/02_decisions_log.md`): key-fact assertions over exact LLM wording. Analytics checks validate structured output (rows, columns, SQL) first; answer text is a secondary check. No pytest — plain Python scripts runnable with a single command.
+
+**Full eval run results (2026-06-03):**
+
+| Suite | Result |
+|-------|--------|
+| Router: 7 classification cases | 7/7 PASS |
+| Analytics: security boundary (retail.sales readable, app.chat_messages denied) | 2/2 PASS |
+| Analytics: declining category (Household in rows + answer) | PASS |
+| Analytics: top-selling product (Coffee Beans, rows[0] + answer) | PASS |
+| Analytics: best month / seasonality (December in rows + answer) | PASS |
+| Analytics: store needing attention (Warsaw in rows[0] + answer) | PASS |
+| Analytics: price change (8.50 + 11.99 in rows + answer) | PASS |
+| Document: return policy (30 days in answer + sources) | PASS |
+| Document: supplier vetting (steps in answer + sources) | PASS |
+| Document: store hours (hours in answer + sources) | PASS |
+| Document: unrelated question (honest refusal) | PASS |
+| API: GET /health | PASS |
+| API: POST /chat -> analytics | PASS |
+| API: POST /chat -> document | PASS |
+| API: POST /chat -> unknown | PASS |
+| **TOTAL** | **22/22** |
+
+**Status: Evaluation v1 complete. All 22 checks pass.**
+
+---
+
 ## Up next
 
 - Frontend (web UI) or prod environment wiring
