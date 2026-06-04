@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import eval_analytics  # noqa: E402
 import eval_documents  # noqa: E402
 import eval_router  # noqa: E402
+import eval_uploads  # noqa: E402
 
 _API_BASE = "http://localhost:8000"
 
@@ -107,9 +108,10 @@ def main() -> int:
     r_passed, r_total = eval_router.run()
     a_passed, a_total = eval_analytics.run()
     d_passed, d_total = eval_documents.run()
+    u_passed, u_total = eval_uploads.run()
 
-    core_passed = r_passed + a_passed + d_passed
-    core_total = r_total + a_total + d_total
+    core_passed = r_passed + a_passed + d_passed + u_passed
+    core_total = r_total + a_total + d_total + u_total
 
     # ── Optional API checks ────────────────────────────────────
     print("\nAPI checks  (requires: uvicorn backend.main:app --reload)")
@@ -123,6 +125,7 @@ def main() -> int:
     print(f"  Router:    {r_passed}/{r_total}")
     print(f"  Analytics: {a_passed}/{a_total}")
     print(f"  Document:  {d_passed}/{d_total}")
+    print(f"  Uploads:   {u_passed}/{u_total}")
     api_note = f"  ({api_skipped} skipped)" if api_skipped else ""
     print(f"  API:       {api_passed}/{api_total - api_skipped}{api_note}")
     print("  " + "-" * 30)
