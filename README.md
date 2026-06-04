@@ -1,441 +1,216 @@
 # RetailMind
 
-An internal AI assistant for retail companies with two capabilities:
-**Document Q&A** (retrieval-augmented generation over uploaded PDFs) and
-**Analytics Q&A** (natural language → SQL over a Postgres retail database).
-A router decides which capability handles each question.
+**Portfolio-grade AI chat assistant for small retail businesses** — ask natural-language questions about your sales data and policy documents, or upload your own CSV/XLSX for instant analytics.
 
-See [`docs/01_project_overview.md`](docs/01_project_overview.md) for a full description and
-[`docs/02_decisions_log.md`](docs/02_decisions_log.md) for the reasoning behind every architectural choice.
+> This is a portfolio-grade MVP, not production SaaS. See [Known limitations](#known-limitations).
 
 ---
 
-## Local development database
+## What it does
 
-The dev database runs in Docker. A fresh container automatically applies the
-schema migration and seeds ~5,000 sales rows on first boot.
+RetailMind is a single chat interface with two capabilities. **Analytics Q&A** translates natural-language questions into SQL, runs them against Postgres, and returns a plain-English answer with the generated SQL and result table. **Document Q&A** retrieves relevant chunks from uploaded PDFs and produces a grounded answer with source citations. A lightweight keyword router decides which capability handles each question — no extra LLM call per request.
 
-### Prerequisites
+A third capability — **business data upload** — lets users upload their own CSV or XLSX sales files directly from the frontend. Rows are validated and loaded into Postgres for immediate analytics. A dataset selector in the sidebar switches between a pre-seeded demo dataset and any uploaded dataset.
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin)
+## Why I built it
 
-### Start the database
+Small retailers and service businesses often have sales data and policy documents, but no data team or internal analytics tooling. A conversational interface lets non-technical staff query their own data without writing SQL or reading through documents manually.
 
-```bash
-# Copy the example env file (only needed once)
-cp .env.example .env
+Technically, I built RetailMind to demonstrate AI/backend engineering skills end-to-end: FastAPI, Postgres schema design and SQL safety, retrieval-augmented generation (RAG), natural-language-to-SQL, LLM routing, CSV/XLSX ingestion, React frontend integration, and evaluation. It is a portfolio-grade MVP.
 
-# Start the Postgres container in the background
-docker compose up -d
-```
+## Key features
 
-On first start Docker pulls `postgres:16`, creates the `retailmind` database,
-and runs the scripts in `scripts/` in alphabetical order:
-`001_schema.sql` (schema + roles) then `002_seed.sql` (reference data + ~5,000 sales rows).
-
-This init step only runs on a **fresh volume**. If the volume already exists,
-the container starts immediately without re-running the scripts.
-
-> **Warning — editing migration or seed files:**
-> If you change `001_schema.sql` or `002_seed.sql`, a plain `docker compose up`
-> will **silently ignore your changes** because the data directory already exists.
-> You must destroy the volume first:
-> ```bash
-> docker compose down -v   # deletes the volume — all data is lost
-> docker compose up -d     # fresh boot; init scripts run again
-> ```
-
-### Connection details
-
-| Setting  | Value                  |
-|----------|------------------------|
-| Host     | `localhost`            |
-| Port     | `5432`                 |
-| Database | `retailmind`           |
-| User     | `postgres`             |
-| Password | value of `POSTGRES_PASSWORD` in `.env` (default: `retailmind_dev`) |
-
-Example `psql` connection:
-
-```bash
-psql postgresql://postgres:retailmind_dev@localhost:5432/retailmind
-```
-
-### Reset to a clean state (re-run seed)
-
-The seed script starts with `TRUNCATE … RESTART IDENTITY CASCADE`, so it is
-safe to re-run at any time. To get a completely fresh container:
-
-```bash
-# Stop the container and delete the named volume
-docker compose down -v
-
-# Start fresh — init scripts run again from scratch
-docker compose up -d
-```
+- **Natural language → SQL** over a seeded 4,990-row demo retail dataset (star schema: sales, products, stores, categories)
+- **PDF document Q&A** with source citations — upload policy docs, supplier contracts, or catalogues
+- **CSV/XLSX business data upload** — rows validated and stored in Postgres for instant analytics
+- **Dataset selector** — switch between demo data and any uploaded dataset; each chat request carries the correct `dataset_id`
+- **Source mode badge** on every analytics response — *Analytics · Demo Data* or *Analytics · Uploaded · filename.csv*
+- **Deterministic keyword router** — no extra LLM call; classifies analytics, document, and unknown questions
+- **Security boundary** — the `analytics_reader` role has `SELECT` on `retail.*` only; generated SQL physically cannot reach chat history or document metadata, even under prompt injection
+- **28/28 evaluation suite** — router, analytics, document, and uploads checks with structured assertions
 
 ---
 
-## Backend
+## Architecture
 
-The backend is a FastAPI application in `backend/`.
+```
+Browser
+  │
+  ▼
+Next.js frontend  (React, Tailwind CSS)
+  │  POST /chat  { message, dataset_id? }
+  ▼
+FastAPI backend
+  ├── Router  (keyword scorer — no LLM call)
+  │     ├── analytics  →  Analytics Agent
+  │     │     ├── NL → SQL prompt  (Ollama LLM)
+  │     │     ├── SQL validator    (static safety checks)
+  │     │     └── Postgres         analytics_reader role
+  │     └── document  →  Document Agent
+  │           ├── Embed question   (sentence-transformers)
+  │           ├── ChromaDB         similarity search
+  │           └── LLM answer       (Ollama)
+  │
+  ├── POST /datasets/upload  →  Upload Pipeline
+  │     ├── CSV/XLSX parse + row-level validation
+  │     └── Postgres  retail.business_sales
+  │
+  └── POST /documents/upload  →  PDF Ingest Pipeline
+        ├── PyMuPDF extract + character chunking
+        └── ChromaDB  vector store
+```
+
+The LLM abstraction layer (`backend/llm/`) means swapping Ollama for a hosted provider (Anthropic, OpenAI) is a one-line config change — no agent code changes required.
+
+---
+
+## Two analytics modes
+
+**Demo mode** (default — no setup beyond Docker): 4,990 seeded sales rows across 24 months, stored in a normalised star schema. Five deliberate patterns are planted — a standout bestseller, a declining category, a seasonal spike, an underperforming store, and a historical price change — so demo queries always return interesting answers. Selecting *Demo Data* in the sidebar sends no `dataset_id` to the backend.
+
+**Uploaded mode**: Upload a CSV or XLSX from the sidebar. Rows are validated row-by-row and loaded into `retail.business_sales`, a flat fact table fully isolated from the demo schema. After upload, the new dataset is auto-selected. Each chat request sends `dataset_id`; the analytics agent switches to a different schema context, SQL templates, and SQL validator that allows only `retail.business_sales`.
+
+The two datasets are completely isolated. A query against uploaded data cannot touch the demo star schema, and vice versa.
+
+---
+
+## Two upload paths
+
+| | PDF documents | Sales data |
+|---|---|---|
+| Accepted formats | `.pdf` | `.csv`, `.xlsx` |
+| Stored in | ChromaDB (text chunks + embeddings) | Postgres (`retail.business_sales`) |
+| Queried via | Vector similarity → LLM answer | NL → SQL → Postgres |
+| Use case | Policy Q&A, supplier docs, catalogues | Revenue, product, store analytics |
+| Validation | Extension check | Row-level type coercion; invalid rows skipped, `skipped_count` returned |
+
+PDFs go to ChromaDB because the query pattern is "find text that matches this question." Sales data goes to Postgres because the query pattern is "aggregate rows that match this filter." Both use the same `/chat` endpoint; the router decides which pipeline runs.
+
+---
+
+## Demo workflows
+
+### Demo analytics
+
+Select *Demo Data* in the sidebar (the default), then ask:
+
+- *"Which category is declining?"*
+- *"What is the top-selling product?"*
+- *"Which store needs the most attention?"*
+- *"Did any product have a price change?"*
+
+The response shows the generated SQL, the result table, a plain-English answer, and an *Analytics · Demo Data* badge.
+
+### Uploaded CSV/XLSX analytics
+
+1. Click *Upload Sales Data* in the sidebar and drop a `.csv` or `.xlsx` file.
+2. After upload, the dataset auto-selects in the selector below.
+3. Ask *"What is the top-selling product?"* — the same question now runs against your data.
+4. The badge shows *Analytics · Uploaded · your_file.csv*.
+5. Click *Demo Data* to switch back to the seeded dataset.
+
+A sample file is available at `data/sample_docs/sample_sales.csv`.
+
+### PDF document Q&A
+
+1. Click *Upload Document* in the sidebar and drop a PDF.
+2. Ask *"What is the return policy?"* or *"What is the supplier vetting process?"*
+3. The response shows a grounded answer with source citations (`[filename.pdf, page N, chunk N]`).
+
+A sample policy document is available at `data/sample_docs/sample_policy.pdf`.
+
+---
+
+## Screenshots
+
+> Screenshots below are from a local development instance with the seeded demo data and `sample_policy.pdf` ingested. Capture your own after running locally (see `docs/screenshots/`).
+
+*Screenshots coming soon — add captures to `docs/screenshots/` and update this section.*
+
+<!--
+Planned captures:
+  docs/screenshots/01_demo_analytics.png     — analytics query, SQL + table, "Analytics · Demo Data" badge
+  docs/screenshots/02_uploaded_analytics.png — uploaded CSV query, "Analytics · Uploaded · filename.csv" badge
+  docs/screenshots/03_document_qa.png        — document Q&A with source citations
+  docs/screenshots/04_dataset_selector.png   — sidebar showing Demo Data + uploaded dataset
+  docs/screenshots/05_csv_upload_success.png — upload feedback with row count
+-->
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16, React 19, Tailwind CSS 4 |
+| Backend | Python 3.11, FastAPI, Pydantic v2 |
+| Relational DB | PostgreSQL 16 (Docker in dev) |
+| Vector DB | ChromaDB (local persistent client) |
+| Embeddings | `sentence-transformers` / `all-MiniLM-L6-v2` (384-dim, ~23 MB) |
+| PDF extraction | PyMuPDF |
+| Spreadsheet parsing | stdlib `csv` + `openpyxl` (no pandas) |
+| Local LLM | Ollama — `qwen2.5-coder:7b` |
+| LLM abstraction | Custom ABC: `OllamaProvider` (dev) + `HostedProvider` stub |
+| HTTP client | httpx |
+
+---
+
+## Local setup
 
 ### Prerequisites
 
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — runs Postgres
 - Python 3.11+
-- [pip](https://pip.pypa.io/) or a virtual-environment manager
+- [Ollama](https://ollama.com/) — runs the local LLM
+- Node.js 18+ — runs the frontend
 
-### Install dependencies
+### Steps
 
 ```bash
-# From the repo root — creates an editable install of the backend package
+# 1. Clone and configure
+git clone https://github.com/dhossain-ai/RetailMind.git
+cd RetailMind
+cp .env.example .env          # defaults work for local dev; no changes required
+
+# 2. Start Postgres  (seeds ~5,000 demo rows automatically on first boot)
+docker compose up -d
+
+# 3. Install Python dependencies and start the API server
 pip install -e .
-```
-
-### Run the API server
-
-```bash
 uvicorn backend.main:app --reload
-```
+# API:      http://localhost:8000
+# OpenAPI:  http://localhost:8000/docs
 
-The server starts on `http://localhost:8000` by default.
+# 4. Pull the local LLM  (one-time download, ~4 GB)
+ollama pull qwen2.5-coder:7b
 
-### Test the health endpoint
-
-```bash
-curl http://localhost:8000/health
-# {"status":"ok","env":"dev","version":"0.1.0"}
-```
-
-Or open `http://localhost:8000/docs` in a browser for the auto-generated OpenAPI UI.
-
-> **Ollama not required for /health.** The health endpoint returns app status only.
-> Ollama needs to be running only when an agent actually calls `LLMProvider.complete()`.
-
-### Analytics endpoint
-
-`POST /analytics` accepts a natural-language question and returns generated SQL, the raw result set, and a plain-English answer.
-
-**curl:**
-
-```bash
-curl -s -X POST http://localhost:8000/analytics \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the top-selling product?"}'
-```
-
-**PowerShell:**
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/analytics `
-  -ContentType "application/json" `
-  -Body '{"question": "What is the top-selling product?"}'
-```
-
-Example response:
-
-```json
-{
-  "question": "What is the top-selling product?",
-  "sql": "SELECT p.name AS product_name, SUM(s.quantity) AS total_quantity_sold\nFROM retail.sales s\nJOIN retail.products p ON s.product_id = p.id\nGROUP BY 1\nORDER BY 2 DESC\nLIMIT 1",
-  "columns": ["product_name", "total_quantity_sold"],
-  "rows": [["Coffee Beans", 2110]],
-  "answer": "The top-selling product is Coffee Beans, with a total quantity of 2110 sold."
-}
-```
-
-> **Requires Ollama + Docker Postgres.** The endpoint calls `qwen2.5-coder:7b` to generate
-> SQL and the answer. It connects to Postgres as `analytics_reader` (SELECT on `retail.*` only).
->
-> **Error responses:**
-> - `400` — SQL validation failed (generated SQL was rejected before hitting the DB)
-> - `503` — Database or LLM service unavailable
-
----
-
-## Analytics agent (CLI)
-
-The analytics agent answers natural-language retail questions by generating SQL,
-executing it against Postgres as `analytics_reader`, and returning a plain-English answer.
-
-### Prerequisites
-
-- Docker Postgres running (`docker compose up -d`)
-- Ollama running with `qwen2.5-coder:7b` pulled:
-  ```bash
-  ollama pull qwen2.5-coder:7b
-  ```
-- `.env` file present with `ANALYTICS_DATABASE_URL` set (see `.env.example`)
-
-### Run a question
-
-```bash
-py -3.11 -m backend.analytics.cli "What is the top-selling product?"
-```
-
-Example output:
-
-```
-Question: What is the top-selling product?
-
-─── Generated SQL ────────────────────────────────────────────────────────────
-SELECT retail.products.name AS top_selling_product_name,
-       SUM(retail.sales.quantity) AS total_units_sold
-FROM retail.sales
-JOIN retail.products ON retail.sales.product_id = retail.products.id
-GROUP BY retail.products.name
-ORDER BY total_units_sold DESC
-LIMIT 1
-
-─── Result ───────────────────────────────────────────────────────────────────
-Columns: ['top_selling_product_name', 'total_units_sold']
-Coffee Beans	2110
-
-─── Answer ───────────────────────────────────────────────────────────────────
-The top-selling product is Coffee Beans, with a total of 2,110 units sold.
-```
-
-> **Security note.** The CLI connects to Postgres as `analytics_reader`,
-> which has `SELECT` on `retail.*` only. Generated SQL cannot read
-> `app.chat_messages` or `app.documents` even if the question attempts it.
-
----
-
-## Document agent (CLI)
-
-The document agent ingests PDFs into ChromaDB and answers natural-language questions
-by retrieving relevant chunks and passing them to the LLM.
-
-### Prerequisites
-
-- Ollama running with `qwen2.5-coder:7b` pulled
-- Docker Postgres running (`docker compose up -d`) — used to store document metadata in `app.documents`
-- `.env` file present (see `.env.example`); `CHROMA_PATH`, `EMBEDDING_MODEL`, and `DOCUMENT_TOP_K` have sensible defaults
-
-### Ingest a PDF
-
-```bash
+# 5. Ingest the sample policy document  (auto-skipped if already ingested)
 py -3.11 -m backend.documents.cli ingest data/sample_docs/sample_policy.pdf
+
+# 6. Install frontend dependencies and start the dev server
+cd frontend
+npm install
+npm run dev                   # → http://localhost:3000
 ```
 
-Example output:
+Open http://localhost:3000. The sidebar has document upload and sales data upload. Demo data is pre-loaded — analytics works immediately after the API server and Ollama are running.
 
-```
-Ingesting: data/sample_docs/sample_policy.pdf
-------------------------------------------------------------------------
-Document ID : 1
-Chunks      : 13
-------------------------------------------------------------------------
-Ingestion complete. Run a query to test retrieval.
-```
+### Database reset
 
-The first run downloads the embedding model (~23 MB). Subsequent runs use the cached model.
-ChromaDB data is persisted to `data/chroma/` (git-ignored).
-
-### Query over ingested documents
+The seed script starts with `TRUNCATE … RESTART IDENTITY CASCADE` and is safe to re-run. To get a completely fresh container:
 
 ```bash
-py -3.11 -m backend.documents.cli query "What is the return policy?"
+docker compose down -v   # deletes the volume — all data is lost
+docker compose up -d     # fresh boot; init scripts run again
 ```
 
-Example output:
-
-```
-Question: What is the return policy?
-
------------------------------------------------------------------------- Answer
-Customers may return any unused, undamaged product within 30 days of purchase
-with a valid receipt for a full refund. Holiday purchases (1 Nov–31 Dec) have
-a 60-day window. Perishable items and digital downloads are non-returnable.
-Defective goods may be returned within 90 days with proof of defect.
-
------------------------------------------------------------------------- Sources
-  [sample_policy.pdf, page 2, chunk 0]
-  [sample_policy.pdf, page 2, chunk 1]
-  ...
-------------------------------------------------------------------------
-```
-
-If the question cannot be answered from the ingested documents, the agent responds:
-
-```
-I cannot find that information in the available documents.
-```
-
-> **Note.** The agent does not use a distance threshold to filter weak results.
-> It instructs the LLM to refuse if the retrieved context does not contain an answer.
-> This is explained in Decision #13 of `docs/02_decisions_log.md`.
-
----
-
-## Document agent (API)
-
-The same document pipeline is also available through the FastAPI server.
-
-### Prerequisites
-
-Same as the CLI: Ollama running, Docker Postgres running, `.env` present.
-The API server must be running:
-
-```bash
-uvicorn backend.main:app --reload
-```
-
-### Upload a PDF
-
-**curl:**
-
-```bash
-curl -s -X POST http://localhost:8000/documents/upload \
-  -F "file=@data/sample_docs/sample_policy.pdf"
-```
-
-**PowerShell:**
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/documents/upload `
-  -Form @{ file = Get-Item data/sample_docs/sample_policy.pdf }
-```
-
-Example response:
-
-```json
-{
-  "document_id": 2,
-  "filename": "95dad59c_sample_policy.pdf",
-  "original_filename": "sample_policy.pdf",
-  "chunk_count": 13,
-  "status": "ingested"
-}
-```
-
-Uploaded files are saved to `data/uploads/` with an 8-character hex prefix to avoid
-overwrites. `data/uploads/` is git-ignored. Only `.pdf` files are accepted; any other
-content type returns `400`.
-
-### Query over ingested documents
-
-**curl:**
-
-```bash
-curl -s -X POST http://localhost:8000/documents/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the return policy?"}'
-```
-
-**PowerShell:**
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/documents/query `
-  -ContentType "application/json" `
-  -Body '{"question": "What is the return policy?"}'
-```
-
-Example response:
-
-```json
-{
-  "question": "What is the return policy?",
-  "answer": "Customers may return any unused, undamaged product within 30 days ...",
-  "sources": [
-    "[sample_policy.pdf, page 2, chunk 0]",
-    "[sample_policy.pdf, page 2, chunk 1]"
-  ]
-}
-```
-
-> **Error responses:**
-> - `400` — uploaded file is not a PDF
-> - `503` — database or LLM service unavailable
-> - `500` — unexpected ingestion failure (uploaded file is cleaned up automatically)
-
----
-
-## Unified chat endpoint
-
-`POST /chat` accepts any natural-language question and routes it automatically to the analytics agent or the document agent. The route is determined by a lightweight deterministic classifier — no extra LLM call.
-
-### curl
-
-```bash
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What is the top-selling product?"}'
-```
-
-### PowerShell
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/chat `
-  -ContentType "application/json" `
-  -Body '{"message": "What is the top-selling product?"}'
-```
-
-### Response shape
-
-The response always includes `route` and `answer`. Other fields are `null` when not applicable.
-
-| Field | analytics | document | unknown |
-|-------|-----------|----------|---------|
-| `route` | `"analytics"` | `"document"` | `"unknown"` |
-| `answer` | plain-English summary | grounded answer from documents | helpful fallback |
-| `sql` | generated SQL | `null` | `null` |
-| `columns` | column names | `null` | `null` |
-| `rows` | result rows | `null` | `null` |
-| `sources` | `null` | citation strings | `null` |
-
-**Analytics example:**
-
-```json
-{
-  "route": "analytics",
-  "answer": "The top-selling product is Coffee Beans, with 2,110 units sold.",
-  "sql": "SELECT p.name, SUM(s.quantity) ...",
-  "columns": ["product_name", "total_quantity_sold"],
-  "rows": [["Coffee Beans", 2110]],
-  "sources": null
-}
-```
-
-**Document example:**
-
-```json
-{
-  "route": "document",
-  "answer": "Customers may return any unused, undamaged product within 30 days ...",
-  "sql": null,
-  "columns": null,
-  "rows": null,
-  "sources": ["[sample_policy.pdf, page 2, chunk 0]", "..."]
-}
-```
-
-**Unknown example:**
-
-```json
-{
-  "route": "unknown",
-  "answer": "I can answer questions about uploaded documents or retail sales analytics. Please ask about a policy or document, or about sales, products, stores, or categories.",
-  "sql": null,
-  "columns": null,
-  "rows": null,
-  "sources": null
-}
-```
-
-> **Router:** Questions about sales, revenue, products, stores, categories, or trends → `analytics`.
-> Questions about policies, suppliers, store hours, or uploaded documents → `document`.
-> Unrecognised questions → `unknown` (HTTP 200, not an error).
->
-> **Error responses:**
-> - `400` — analytics route: SQL validation failed
-> - `503` — database or LLM service unavailable
+> **Editing migration files:** If you change `001_schema.sql` or `002_seed.sql`, a plain `docker compose up` silently ignores the changes because the data directory already exists. Use `docker compose down -v` first.
 
 ---
 
 ## Evaluation
 
-The evaluation scripts verify the router, analytics agent, and document agent against the seeded demo data. Run them after any change to routing logic, agent prompts, or the database schema.
+The evaluation suite verifies the router, analytics agent, document agent, and upload pipeline against deterministic fixtures.
 
 ### Run all checks
 
@@ -443,7 +218,7 @@ The evaluation scripts verify the router, analytics agent, and document agent ag
 py -3.11 scripts/eval_all.py
 ```
 
-This runs all three evaluations in sequence and prints a summary:
+Expected output (with server running):
 
 ```
 ============================================================
@@ -453,30 +228,57 @@ RetailMind - Evaluation v1
   Router:    7/7
   Analytics: 7/7
   Document:  4/4
-  API:       4/4  (or "skipped" if server not running)
+  Uploads:   6/6
+  API:       4/4
   ------------------------------
-  TOTAL:     22/22 passed
+  TOTAL:     28/28 passed
 ============================================================
 ```
 
-Exit code is 0 on full pass, 1 on any failure.
+Exit code 0 on full pass, 1 on any failure. The four API checks (`GET /health`, `POST /chat` × 3) are silently skipped when the server is not running; the remaining 24 checks run regardless.
 
-**Prerequisites for full eval:**
-
-- Docker Postgres running: `docker compose up -d`
-- Ollama running with `qwen2.5-coder:7b` pulled
-- Sample policy ingested: `py -3.11 -m backend.documents.cli ingest data/sample_docs/sample_policy.pdf`
-  (or the eval script auto-ingests it if ChromaDB is empty)
-
-**API checks** (`GET /health`, `POST /chat` x3) are optional. They are silently skipped when the FastAPI server is not running and do not affect the exit code.
-
-### Individual scripts (for debugging)
+### Individual scripts
 
 | Script | Dependencies | What it checks |
-|--------|-------------|----------------|
+|---|---|---|
 | `py -3.11 scripts/eval_router.py` | none | 7 classification cases |
-| `py -3.11 scripts/eval_analytics.py` | Postgres + Ollama | 2 security checks + 5 seeded Q&A |
-| `py -3.11 scripts/eval_documents.py` | ChromaDB + Postgres + Ollama | 4 document Q&A + source citations |
+| `py -3.11 scripts/eval_analytics.py` | Postgres + Ollama | 2 security boundary checks + 5 seeded demo Q&A |
+| `py -3.11 scripts/eval_documents.py` | Postgres + Ollama + ChromaDB | 4 document Q&A + source citations |
+| `py -3.11 scripts/eval_uploads.py` | Postgres + Ollama | 4 uploaded dataset checks + 2 optional API checks |
+| `py -3.11 scripts/eval_all.py` | all of the above | all checks in sequence |
+
+### Design note
+
+Analytics checks validate structured output first (SQL, rows, columns) — deterministic database output. Answer text is asserted on key facts ("Coffee Beans", "Household", "Warsaw") rather than exact strings, so the suite stays stable across model versions. See [Decision #15](docs/02_decisions_log.md) for the full rationale.
+
+---
+
+## Design decisions
+
+Every non-obvious decision is recorded in [`docs/02_decisions_log.md`](docs/02_decisions_log.md) with a plain-language explanation. Highlights:
+
+- **Two Postgres schemas (`retail` / `app`)** — `analytics_reader` has `SELECT` on `retail.*` only; generated SQL cannot reach chat history or document metadata even under prompt injection. ([Decision #1](docs/02_decisions_log.md))
+- **Flat table for uploaded data (`retail.business_sales`), not reusing the demo star schema** — the two datasets are completely isolated; the agent routes to one or the other based on `dataset_id`. ([Decision #16](docs/02_decisions_log.md))
+- **Deterministic keyword router, not an LLM classifier** — no extra round-trip per query; fully testable without a running LLM. ([Decision #14](docs/02_decisions_log.md))
+- **Static schema context, not `information_schema` queries** — faster, allows human-authored business-term definitions, no runtime DB dependency in the prompt path. ([Decision #12](docs/02_decisions_log.md))
+- **No LangChain/LlamaIndex** — the RAG pipeline is five explicit steps (extract → chunk → embed → retrieve → answer); plain functions are easier to trace and explain. ([Decision #13](docs/02_decisions_log.md))
+- **No pandas in the upload pipeline** — stdlib `csv` + `openpyxl` covers all parsing needs; avoids a 25 MB dependency. ([Decision #17](docs/02_decisions_log.md))
+
+---
+
+## Known limitations
+
+This is a portfolio-grade MVP, not production software.
+
+- **Single-business, local mode only.** No authentication, no multi-tenancy. All uploaded datasets are visible to anyone with access to the running app.
+- **Local LLM only.** The hosted provider stub (`backend/llm/hosted_stub.py`) exists but is not wired up. Requires a local Ollama installation.
+- **No persistent chat history.** Conversations are in-memory only. Refreshing the page clears the session.
+- **Keyword router accuracy is high but not 100%.** Genuinely ambiguous questions may be misrouted. The eval suite passes 7/7; real-world coverage is broader.
+- **No row-level validation report for uploaded files.** Skipped rows are counted (`skipped_count` in the upload response) but not reported line-by-line. There is no UI indication of which rows failed validation.
+- **No delete dataset UI.** Uploaded datasets persist until removed directly from the database.
+- **`.xls` format not supported.** Only `.csv` and `.xlsx` are accepted. Legacy binary Excel files return `400`.
+- **ChromaDB is local and file-based.** Not suitable for concurrent multi-user access; appropriate for single-user local use.
+- **No date dimension.** Fiscal-year or non-Gregorian calendar rollups are not supported. Date maths uses Postgres built-in functions only.
 
 ---
 
@@ -485,30 +287,111 @@ Exit code is 0 on full pass, 1 on any failure.
 ```
 RetailMind/
 ├── backend/
-│   ├── analytics/        # NL→SQL analytics agent
-│   │   ├── schema_context.py  # compact retail schema + business term definitions
-│   │   ├── sql_validator.py   # static SQL safety checks
-│   │   ├── db.py              # query runner (analytics_reader role only)
-│   │   ├── agent.py           # LLM pipeline: question → SQL → answer
-│   │   └── cli.py             # command-line entry point
-│   ├── documents/        # PDF ingestion and document Q&A agent
-│   │   ├── extract.py         # page-by-page PDF text extraction (PyMuPDF)
-│   │   ├── chunking.py        # character-based text chunking
-│   │   ├── embeddings.py      # sentence-transformers embeddings (all-MiniLM-L6-v2)
-│   │   ├── vectorstore.py     # ChromaDB persistence (cosine distance)
-│   │   ├── db.py              # app.documents metadata (DATABASE_URL, postgres role)
-│   │   ├── agent.py           # ingest() and run() pipeline
-│   │   └── cli.py             # command-line entry point
-│   ├── llm/              # LLM provider abstraction (Ollama + hosted stub)
-│   ├── config.py         # pydantic-settings config
-│   └── main.py           # FastAPI app + /health endpoint
-├── frontend/             # Web UI (framework TBD)
+│   ├── analytics/       # NL→SQL pipeline: schema context, SQL validator, DB, agent, CLI
+│   ├── documents/       # PDF pipeline: extract, chunk, embed, vectorstore, agent, CLI
+│   ├── uploads/         # CSV/XLSX pipeline: parser, row validator, DB, agent
+│   ├── llm/             # LLM provider abstraction (OllamaProvider + HostedProvider stub)
+│   ├── config.py        # pydantic-settings config (reads from .env)
+│   ├── router.py        # Deterministic keyword classifier
+│   └── main.py          # FastAPI app — all endpoints
+├── frontend/
+│   ├── app/             # Next.js App Router (layout, page)
+│   ├── components/      # ChatPage, DocumentUpload, DatasetUpload, DatasetSelector, …
+│   └── lib/api.ts       # Typed API client
 ├── data/
-│   └── sample_docs/      # Sample PDFs for local development
-├── docs/                 # Architecture docs, decisions log, progress notes
-├── scripts/              # SQL migrations run by Docker on first boot
-│   ├── 001_schema.sql
-│   └── 002_seed.sql
+│   ├── sample_docs/     # sample_policy.pdf, sample_sales.csv, sample_sales.xlsx
+│   └── uploads/         # runtime upload storage (git-ignored)
+├── docs/
+│   ├── 01_project_overview.md
+│   ├── 02_decisions_log.md    # 18 architectural decisions with plain-language rationale
+│   ├── 05_progress.md         # phase-by-phase build log
+│   └── screenshots/           # UI screenshots (add manually)
+├── scripts/
+│   ├── 001_schema.sql         # Postgres schema + roles + grants
+│   ├── 002_seed.sql           # ~5,000 seeded demo sales rows (deterministic)
+│   ├── 003_business_sales.sql # uploaded data tables
+│   ├── eval_router.py
+│   ├── eval_analytics.py
+│   ├── eval_documents.py
+│   ├── eval_uploads.py
+│   └── eval_all.py
 ├── docker-compose.yml
+├── pyproject.toml
 └── .env.example
 ```
+
+---
+
+## API reference
+
+Interactive documentation is available at http://localhost:8000/docs when the server is running.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Server status |
+| `POST` | `/chat` | Unified chat — routes to analytics or document agent |
+| `POST` | `/analytics` | Analytics Q&A (direct, bypasses router) |
+| `POST` | `/documents/upload` | Upload and ingest a PDF |
+| `POST` | `/documents/query` | Document Q&A (direct) |
+| `POST` | `/datasets/upload` | Upload and ingest a CSV/XLSX sales file |
+| `GET` | `/datasets` | List uploaded datasets (newest first) |
+
+### POST /chat — request and response shapes
+
+```json
+// Request — demo mode (no dataset_id)
+{ "message": "What is the top-selling product?" }
+
+// Request — uploaded mode
+{ "message": "What is the top-selling product?", "dataset_id": 7 }
+```
+
+```json
+// Analytics response (demo)
+{
+  "route": "analytics",
+  "answer": "The top-selling product is Coffee Beans, with 2,110 units sold.",
+  "sql": "SELECT p.name, SUM(s.quantity) FROM retail.sales s JOIN ...",
+  "columns": ["product_name", "total_quantity_sold"],
+  "rows": [["Coffee Beans", 2110]],
+  "sources": null,
+  "mode": "demo"
+}
+
+// Analytics response (uploaded)
+{
+  "route": "analytics",
+  "answer": "The top-selling product is Coffee Beans, with 13 units sold.",
+  "sql": "SELECT product, SUM(quantity) FROM retail.business_sales WHERE dataset_id = 7 ...",
+  "columns": ["product", "total_units"],
+  "rows": [["Coffee Beans", 13]],
+  "sources": null,
+  "mode": "uploaded"
+}
+
+// Document response
+{
+  "route": "document",
+  "answer": "Customers may return any unused, undamaged product within 30 days ...",
+  "sql": null,
+  "columns": null,
+  "rows": null,
+  "sources": ["[sample_policy.pdf, page 2, chunk 0]", "..."],
+  "mode": null
+}
+
+// Unknown route
+{
+  "route": "unknown",
+  "answer": "I can answer questions about uploaded documents or retail sales analytics ...",
+  "sql": null,
+  "columns": null,
+  "rows": null,
+  "sources": null,
+  "mode": null
+}
+```
+
+**Error responses:** `400` — SQL validation failed or unsupported file type. `422` — invalid `dataset_id` (must be a positive integer). `503` — database or LLM service unavailable.
