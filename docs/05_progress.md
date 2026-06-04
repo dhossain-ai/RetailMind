@@ -404,8 +404,54 @@ Route (app): / (Static)
 
 ---
 
+---
+
+### 2026-06-04 — Business Data Upload v1 — Phase 2: Backend upload pipeline
+
+**New files:**
+- `backend/uploads/__init__.py` — package marker
+- `backend/uploads/parser.py` — CSV/XLSX reading, header normalisation, synonym mapping, row-limit check
+- `backend/uploads/validator.py` — row-level type coercion (date, numeric), currency stripping, revenue derivation, skip/count
+- `backend/uploads/db.py` — single-transaction insert into `app.datasets` + `retail.business_sales`; `list_datasets()` for GET endpoint
+- `backend/uploads/agent.py` — `ingest(path, original_filename)` orchestrator
+- `data/sample_docs/sample_sales.csv` — 20-row sample for manual verification and future eval fixtures
+- `data/sample_docs/sample_sales.xlsx` — XLSX equivalent (5 rows) for format verification
+
+**Modified files:**
+- `backend/main.py` — added `DatasetUploadResponse`, `DatasetListItem` models; added `POST /datasets/upload` and `GET /datasets` endpoints
+- `pyproject.toml` — added `openpyxl>=3.1`
+- `docs/02_decisions_log.md` — Decision #17: no pandas, utf-8-sig, uuid stored filename, skip-invalid-rows rationale
+
+**Key design decisions (Decision #17):**
+- stdlib `csv` + `openpyxl`; no pandas
+- `utf-8-sig` encoding for CSV to handle Excel BOM headers
+- Currency symbol and thousands-comma stripping before Decimal parsing (`$1,200.50`, `€12.50`, `£3.99`)
+- uuid-hex stored filename; original filename in metadata only
+- 50,000-row hard limit as a constant; invalid rows skipped not rejected
+- Single psycopg transaction: `app.datasets` row + `retail.business_sales` bulk insert + commit atomically
+
+**Verification results:**
+
+| Check | Result |
+|-------|--------|
+| Import check: all new modules | ✓ |
+| Routes registered: `/datasets/upload`, `/datasets` | ✓ |
+| Upload valid CSV (20 rows) | ✓ `dataset_id=1, row_count=20, skipped_count=0` |
+| Upload valid XLSX (5 rows) | ✓ `dataset_id=2, row_count=5, skipped_count=0` |
+| `GET /datasets` — newest first, both entries | ✓ |
+| DB rows in `retail.business_sales` (dataset 1) | ✓ 20 rows, dates 2024-01-05 → 2024-03-31 |
+| DB rows in `retail.business_sales` (dataset 2) | ✓ 5 rows, dates 2024-01-05 → 2024-03-04 |
+| Upload missing date column → 400 with field name | ✓ |
+| Upload all-invalid rows → 400 with skipped count | ✓ |
+| Upload `.xls` → 400 "Only .csv and .xlsx accepted" | ✓ |
+| `eval_all.py` regression — router 7/7, document 4/4, API 4/4 | ✓ |
+| Analytics 7/7 (re-run after Ollama warm-up) | ✓ |
+
+Note: first `eval_all.py` run showed analytics 2/7 because Ollama returned HTTP 500 during model loading while the newly started server competed for resources. Re-running `eval_analytics.py` in isolation after warm-up confirmed 7/7 — no code regression.
+
+---
+
 ## Up next
 
-- Business Data Upload v1 — Phase 2: upload pipeline (CSV/XLSX parsing, column mapping, row validation, insertion into `app.datasets` + `retail.business_sales`)
-- Business Data Upload v1 — Phase 3: analytics agent extension (`dataset_id` parameter, `BUSINESS_SCHEMA_CONTEXT`, uploaded-data SQL templates)
+- Business Data Upload v1 — Phase 3: analytics agent extension (`dataset_id` parameter, `BUSINESS_SCHEMA_CONTEXT`, uploaded-data SQL templates) + `eval_uploads.py`
 - Business Data Upload v1 — Phase 4: frontend (dataset upload widget, dataset selector, mode badge)

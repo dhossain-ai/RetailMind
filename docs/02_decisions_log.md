@@ -161,3 +161,19 @@ The evaluation scripts (`scripts/eval_router.py`, `eval_analytics.py`, `eval_doc
 **Why `revenue` is a plain column rather than `GENERATED ALWAYS AS (quantity * unit_price)`.** In `retail.sales`, both `quantity` and `unit_price` are always non-null, so the generated expression is safe. In `retail.business_sales`, `unit_price` is nullable — many small-business CSV exports carry only a total amount column without breaking it into quantity and unit price. When `unit_price` is present the upload pipeline computes `quantity * unit_price`; when only a total amount is available, that value is stored directly. A generated column cannot handle both cases.
 
 **Why an explicit `GRANT SELECT ON retail.business_sales TO analytics_reader`.** `001_schema.sql` includes `ALTER DEFAULT PRIVILEGES IN SCHEMA retail GRANT SELECT ON TABLES TO analytics_reader`, which covers tables created in the future. The explicit grant in `003_business_sales.sql` is belt-and-suspenders: if this migration is applied on an environment where the default privileges differ (e.g. a fresh Supabase project not bootstrapped from `001_schema.sql`), `analytics_reader` can still query the table without a separate step. `app.datasets` is intentionally not granted to `analytics_reader` — the `app` schema security boundary is preserved unchanged.
+
+---
+
+## 17. Upload pipeline: stdlib csv + openpyxl, no pandas; utf-8-sig; uuid stored filename
+
+The upload pipeline (`backend/uploads/`) uses Python's stdlib `csv` module for `.csv` files and `openpyxl` for `.xlsx` files. `.xls` (legacy binary Excel format) is explicitly not supported in v1.
+
+**Why no pandas.** Pandas is a 25 MB install with NumPy as a transitive dependency. The pipeline needs exactly three things from a data-reading library: read rows, expose headers, iterate cells. Both `csv` and `openpyxl` do this with no magic. The pipeline is about 80 lines of plain Python that a reader can trace step-by-step without knowing any DataFrame API. A future maintainer can add pandas later if the processing needs grow; removing a dependency is always harder than adding one.
+
+**Why utf-8-sig for CSV.** Excel saves CSVs with a UTF-8 BOM (byte-order mark) prepended to the file. Without `utf-8-sig` encoding, the BOM becomes part of the first column header — so `"date"` becomes `"﻿date"`, which does not match the synonym table and causes a false missing-column error. `utf-8-sig` strips the BOM transparently; plain UTF-8 files are unaffected.
+
+**Why uuid-hex stored filename, not original filename.** The original filename is user-supplied and untrusted. Storing it directly risks path traversal (e.g. `../../etc/passwd`), silent overwrites of existing files, and OS-specific character restrictions. The upload endpoint generates a random `uuid.uuid4().hex` stored name and keeps the original filename only as metadata in `app.datasets`. This is the same pattern used for PDF uploads in `POST /documents/upload`.
+
+**Why the row limit is a constant in parser.py, not a config setting.** 50,000 rows is a hard v1 constraint, not a per-deployment tuning parameter. Exposing it as an env var would imply operators should adjust it, which invites misconfiguration without any agreed-upon safe upper bound. When the project is ready to lift the limit, it is a one-line code change in a clearly named constant.
+
+**Why skip invalid rows rather than reject the whole file.** Real small-business CSV exports routinely contain summary/subtotal rows, blank rows, and header repetitions that are not sales records. Rejecting the whole file on a single bad row would make the tool unusable for common real-world inputs. Skipping and reporting `skipped_count` gives the caller enough information to investigate without blocking a valid upload. The whole upload is only rejected when zero valid rows remain — i.e., the file contained no usable data at all.
