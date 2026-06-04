@@ -362,7 +362,50 @@ Route (app): / (Static)
 
 ---
 
+---
+
+### 2026-06-04 — Business Data Upload v1 — Phase 1: Database foundation
+
+**New file:**
+- `scripts/003_business_sales.sql` — adds `app.datasets` and `retail.business_sales`; creates two indexes; explicit `GRANT SELECT ON retail.business_sales TO analytics_reader`
+
+**Changed files:**
+- `docs/02_decisions_log.md` — Decision #16: flat table design, nullable `store`, no cross-schema FK, plain `revenue` column, explicit grant rationale
+
+**No backend or frontend code changes in this phase.**
+
+**Schema additions:**
+
+`app.datasets` — metadata for each uploaded CSV/XLSX (mirrors `app.documents` pattern):
+- `id` SERIAL PK, `original_filename`, `stored_filename`, `row_count` (nullable until ingestion completes), `skipped_count`, `upload_date`, `created_at`
+
+`retail.business_sales` — flat fact table for uploaded business sales data:
+- `id` SERIAL PK, `dataset_id` INT NOT NULL (app-layer reference to `app.datasets`), `sale_date` DATE, `product` TEXT NOT NULL with non-blank check, `category` TEXT nullable, `store` TEXT nullable, `quantity` INT NOT NULL > 0, `unit_price` NUMERIC nullable ≥ 0, `revenue` NUMERIC NOT NULL ≥ 0, `created_at`
+- Indexes: `(dataset_id)` and `(dataset_id, sale_date)`
+- Explicit `GRANT SELECT … TO analytics_reader`; `app.datasets` not granted
+
+**Key design decisions (Decision #16):**
+- Flat table: no FK joins to demo dimension tables — uploaded data is fully isolated from seed data
+- `store` nullable so single-location businesses can omit it without schema changes later
+- No cross-schema DB FK: `dataset_id` is enforced at the app layer to preserve the `retail`/`app` isolation boundary
+- `revenue` is plain (not generated) because `unit_price` is nullable in many CSV exports
+
+**Verification results:**
+
+| Check | Result |
+|-------|--------|
+| `\dt retail.*` — `business_sales` present | ✓ |
+| `\dt app.*` — `datasets` present | ✓ |
+| `\d retail.business_sales` — columns and constraints correct | ✓ |
+| `\di retail.*` — both indexes present | ✓ |
+| `analytics_reader SELECT FROM retail.business_sales` | ✓ (0 rows, no error) |
+| `analytics_reader SELECT FROM app.datasets` | ✓ (permission denied — boundary intact) |
+| `eval_all.py` regression | ✓ 18/18 passed (4 API checks skipped — server not running) |
+
+---
+
 ## Up next
 
-- Chat history / session management
-- Additional sample documents for richer document Q&A demo
+- Business Data Upload v1 — Phase 2: upload pipeline (CSV/XLSX parsing, column mapping, row validation, insertion into `app.datasets` + `retail.business_sales`)
+- Business Data Upload v1 — Phase 3: analytics agent extension (`dataset_id` parameter, `BUSINESS_SCHEMA_CONTEXT`, uploaded-data SQL templates)
+- Business Data Upload v1 — Phase 4: frontend (dataset upload widget, dataset selector, mode badge)
