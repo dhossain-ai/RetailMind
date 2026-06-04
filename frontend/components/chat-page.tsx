@@ -11,7 +11,16 @@ import { Textarea } from "@/components/ui/textarea"
 import { AnalyticsResult } from "@/components/analytics-result"
 import { DocumentSources } from "@/components/document-sources"
 import { DocumentUpload } from "@/components/document-upload"
-import { postChat, type ChatResponse, type ChatRoute } from "@/lib/api"
+import {
+  listDatasets,
+  postChat,
+  type ChatResponse,
+  type ChatRoute,
+  type DatasetListItem,
+  type DatasetUploadResponse,
+} from "@/lib/api"
+import { DatasetSelector } from "@/components/dataset-selector"
+import { DatasetUpload } from "@/components/dataset-upload"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,6 +30,8 @@ type Message = {
   text: string
   response?: ChatResponse
   error?: string
+  datasetIdAtSend?: number | null
+  datasetLabelAtSend?: string
 }
 
 // ── Route badge metadata ───────────────────────────────────────────────────────
@@ -55,6 +66,10 @@ export function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
+  const [datasets, setDatasets] = useState<DatasetListItem[]>([])
+  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null)
+  const [selectedDataset, setSelectedDataset] = useState<DatasetListItem | null>(null)
+  const [datasetsError, setDatasetsError] = useState<string | undefined>()
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -62,9 +77,48 @@ export function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, loading])
 
+  useEffect(() => {
+    loadDatasets()
+  }, [])
+
+  async function loadDatasets() {
+    try {
+      const data = await listDatasets()
+      setDatasets(data)
+      setDatasetsError(undefined)
+    } catch {
+      setDatasetsError("Could not load datasets.")
+    }
+  }
+
+  async function refreshDatasets(autoSelectId?: number) {
+    try {
+      const data = await listDatasets()
+      setDatasets(data)
+      setDatasetsError(undefined)
+      if (autoSelectId != null) {
+        const found = data.find((d) => d.dataset_id === autoSelectId) ?? null
+        if (found) {
+          setSelectedDatasetId(found.dataset_id)
+          setSelectedDataset(found)
+        }
+      }
+    } catch {
+      setDatasetsError("Could not load datasets.")
+    }
+  }
+
+  function handleDatasetUploaded(result: DatasetUploadResponse) {
+    refreshDatasets(result.dataset_id)
+  }
+
   async function submit() {
     const text = input.trim()
     if (!text || loading) return
+
+    // Snapshot dataset selection at send time so old messages retain their source context
+    const datasetIdAtSend = selectedDatasetId
+    const datasetLabelAtSend = selectedDataset?.original_filename
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", text }
     setMessages((prev) => [...prev, userMsg])
@@ -72,10 +126,17 @@ export function ChatPage() {
     setLoading(true)
 
     try {
-      const response = await postChat(text)
+      const response = await postChat(text, datasetIdAtSend)
       setMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), role: "assistant", text: response.answer, response },
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: response.answer,
+          response,
+          datasetIdAtSend,
+          datasetLabelAtSend,
+        },
       ])
     } catch (err) {
       setMessages((prev) => [
@@ -89,7 +150,6 @@ export function ChatPage() {
       ])
     } finally {
       setLoading(false)
-      // Return focus to the input after response arrives
       setTimeout(() => textareaRef.current?.focus(), 0)
     }
   }
@@ -131,13 +191,32 @@ export function ChatPage() {
 
         <Separator />
 
-        {/* Document upload */}
-        <div className="p-4">
-          <DocumentUpload />
+        {/* Scrollable upload + selector area */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Document upload */}
+          <div className="p-4">
+            <DocumentUpload />
+          </div>
+
+          <Separator />
+
+          {/* Sales data upload + dataset selector */}
+          <div className="space-y-4 p-4">
+            <DatasetUpload onUploaded={handleDatasetUploaded} />
+            <DatasetSelector
+              datasets={datasets}
+              selectedId={selectedDatasetId}
+              onChange={(id, ds) => {
+                setSelectedDatasetId(id)
+                setSelectedDataset(ds)
+              }}
+              error={datasetsError}
+            />
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="mt-auto border-t border-border px-4 py-3">
+        <div className="shrink-0 border-t border-border px-4 py-3">
           <p className="text-xs text-muted-foreground">RetailMind v0.1</p>
         </div>
       </aside>
@@ -210,7 +289,11 @@ export function ChatPage() {
                         className="gap-1"
                       >
                         {ROUTE_META[msg.response.route].icon}
-                        {ROUTE_META[msg.response.route].label}
+                        {msg.response.route === "analytics"
+                          ? msg.response.mode === "uploaded"
+                            ? `Analytics · Uploaded · ${msg.datasetLabelAtSend ?? "Uploaded Dataset"}`
+                            : "Analytics · Demo Data"
+                          : ROUTE_META[msg.response.route].label}
                       </Badge>
                     </div>
                   )}
