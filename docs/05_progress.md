@@ -451,7 +451,54 @@ Note: first `eval_all.py` run showed analytics 2/7 because Ollama returned HTTP 
 
 ---
 
+---
+
+### 2026-06-04 — Business Data Upload v1 — Phase 3: analytics agent extension
+
+**Changed files:**
+- `backend/analytics/schema_context.py` — added `BUSINESS_SCHEMA_CONTEXT_TEMPLATE` (format string; `{dataset_id}` replaced at call time)
+- `backend/analytics/sql_validator.py` — refactored shared safety checks into `_standard_checks()`; added `validate_uploaded(sql, dataset_id)` with allowlist and dataset_id filter enforcement
+- `backend/analytics/agent.py` — added `dataset_id: int | None = None` param to `run()`; added `_BUSINESS_SQL_PROMPT` with four flat-table templates; routes schema/prompt/validator based on `dataset_id`; `run()` now returns `mode` ("uploaded" or "demo")
+- `backend/main.py` — added `dataset_id: int | None = None` (with positive-integer validator) to `AnalyticsRequest` and `ChatRequest`; added `mode: str | None = None` to `AnalyticsResponse` and `ChatResponse`; threaded `dataset_id` to agent calls; `/chat` passes `mode` in analytics responses
+
+**New files:**
+- `scripts/eval_uploads.py` — 4 core checks (direct Python calls: upload fixture, top product, total revenue, best month) + 2 optional API checks; demo regression confirms `dataset_id=None` still uses star schema
+- `docs/02_decisions_log.md` — Decision #18: why `dataset_id` routing chooses context/prompt/validator, not a separate agent
+
+**Key design decisions (Decision #18):**
+- `dataset_id` branches inside `run()`, not a separate agent — single function, minimal footprint
+- Allowlist in `validate_uploaded`: any `retail.<table>` other than `business_sales` is rejected (not a blacklist)
+- `dataset_id` filter regex allows optional table alias prefix (`bs.dataset_id = N`)
+- `mode` field on responses is optional (`str | None`) to remain backwards-compatible with existing clients
+
+**Verification results:**
+
+| Check | Result |
+|-------|--------|
+| Import check: all modified modules | ✓ |
+| POST /analytics with dataset_id=4 — top product | Coffee Beans (13 units), mode=uploaded, SQL uses business_sales ✓ |
+| POST /analytics without dataset_id — demo regression | Coffee Beans (2,110 units), mode=demo, SQL uses retail.sales ✓ |
+| POST /chat with dataset_id — analytics routing | route=analytics, mode=uploaded, SQL uses business_sales ✓ |
+| POST /analytics with dataset_id=0 | 422 "dataset_id must be a positive integer." ✓ |
+| POST /analytics with dataset_id=-5 | 422 "dataset_id must be a positive integer." ✓ |
+| eval_uploads.py — 4 core + 2 API | 6/6 PASS ✓ |
+| eval_all.py — full suite | 28/28 PASS ✓ |
+
+**eval_all.py summary (2026-06-04):**
+
+| Suite | Result |
+|-------|--------|
+| Router: 7 classification cases | 7/7 PASS |
+| Analytics: 2 security + 5 demo questions | 7/7 PASS |
+| Document: 4 Q&A checks | 4/4 PASS |
+| Uploads: 4 core + 2 API | 6/6 PASS |
+| API: GET /health + POST /chat ×3 | 4/4 PASS |
+| **TOTAL** | **28/28** |
+
+**Status: Business Data Upload v1 — Phase 3 complete and verified.**
+
+---
+
 ## Up next
 
-- Business Data Upload v1 — Phase 3: analytics agent extension (`dataset_id` parameter, `BUSINESS_SCHEMA_CONTEXT`, uploaded-data SQL templates) + `eval_uploads.py`
 - Business Data Upload v1 — Phase 4: frontend (dataset upload widget, dataset selector, mode badge)

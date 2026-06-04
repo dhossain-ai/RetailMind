@@ -177,3 +177,17 @@ The upload pipeline (`backend/uploads/`) uses Python's stdlib `csv` module for `
 **Why the row limit is a constant in parser.py, not a config setting.** 50,000 rows is a hard v1 constraint, not a per-deployment tuning parameter. Exposing it as an env var would imply operators should adjust it, which invites misconfiguration without any agreed-upon safe upper bound. When the project is ready to lift the limit, it is a one-line code change in a clearly named constant.
 
 **Why skip invalid rows rather than reject the whole file.** Real small-business CSV exports routinely contain summary/subtotal rows, blank rows, and header repetitions that are not sales records. Rejecting the whole file on a single bad row would make the tool unusable for common real-world inputs. Skipping and reporting `skipped_count` gives the caller enough information to investigate without blocking a valid upload. The whole upload is only rejected when zero valid rows remain — i.e., the file contained no usable data at all.
+
+---
+
+## 18. Uploaded analytics mode: `dataset_id` branches inside `run()`, not a separate agent
+
+When a `dataset_id` is provided to `POST /analytics` or `POST /chat`, the analytics agent uses `retail.business_sales` instead of the demo star schema. This branching is handled inside `analytics_agent.run()` by selecting a different schema context string, a different SQL prompt with flat-table templates, and a different SQL validator (`validate_uploaded` instead of `validate`). There is no separate uploaded-data agent module.
+
+**Why branch inside `run()`, not a new agent.** The uploaded-data query pipeline is structurally identical to the demo pipeline: NL → SQL prompt → LLM → extract SQL → validate → run query → summarise. The only differences are the schema description, the SQL templates, and the validation rules. A separate module would duplicate ~80% of the code to change ~20%. A `dataset_id is not None` branch at the top of `run()` achieves the same separation with a minimal footprint that is easy to trace.
+
+**Why an allowlist for table references, not a blacklist.** The SQL validator in uploaded mode rejects any `retail.<table>` reference that is not `retail.business_sales`. A blacklist of known demo tables (`retail.sales`, `retail.products`, etc.) would silently permit future tables added to the retail schema — a security and data-isolation gap. An allowlist fails closed: any unrecognised table is rejected regardless of whether it existed when the code was written.
+
+**Why the `dataset_id` filter check allows an optional alias prefix.** The regex `(?:\w+\.)?dataset_id\s*=\s*N` matches both `WHERE dataset_id = 5` and `WHERE bs.dataset_id = 5`. Requiring an exact unaliased form would make the validator fragile against SQL that aliases the table for readability. The check still rejects queries where the filter is absent or uses a different integer.
+
+**Why `mode` is `str | None` rather than a required field on the response models.** Existing clients that parse `AnalyticsResponse` or `ChatResponse` do not expect a `mode` field. Making it optional (`None` default) means those clients continue to work unchanged. New clients that want to distinguish demo from uploaded data can read `mode`; clients that do not care can ignore it.
