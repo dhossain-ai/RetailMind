@@ -499,6 +499,56 @@ Note: first `eval_all.py` run showed analytics 2/7 because Ollama returned HTTP 
 
 ---
 
+---
+
+### 2026-06-04 — Business Data Upload v1 — Phase 4: frontend integration
+
+**Changed files:**
+- `frontend/lib/api.ts` — added `DatasetUploadResponse`, `DatasetListItem` types; added `mode?: string` to `ChatResponse`; updated `postChat(message, datasetId?)` to include optional `dataset_id` in request body; added `uploadDataset()` (POST `/datasets/upload`) and `listDatasets()` (GET `/datasets`)
+- `frontend/components/chat-page.tsx` — added `DatasetListItem[]` state + `selectedDatasetId`/`selectedDataset` state; `useEffect` calls `listDatasets()` on mount; `submit()` snapshots dataset selection at send time (`datasetIdAtSend`, `datasetLabelAtSend`) and passes `dataset_id` to `postChat`; sidebar extended with `DatasetUpload` + `DatasetSelector`; analytics route badge now shows mode/source (`Analytics · Demo Data` or `Analytics · Uploaded · filename.csv`); `Message` type extended with `datasetIdAtSend` and `datasetLabelAtSend`
+
+**New files:**
+- `frontend/components/dataset-upload.tsx` — drag-drop CSV/XLSX uploader; same idle→uploading→done/error state machine as `DocumentUpload`; calls `onUploaded(result)` prop on success
+- `frontend/components/dataset-selector.tsx` — radio-style list; "Demo Data" always first and non-removable; uploaded datasets shown newest-first with row count; inline error display if `GET /datasets` fails
+
+**Key design decisions:**
+- `DatasetUpload` and `DocumentUpload` are separate components; no mixed file-type logic
+- `selectedDatasetId = null` always means demo mode; `dataset_id` key is omitted from the request body when null (not sent as `null`)
+- Dataset source is snapshotted at send time, not render time — old messages retain their source badge even when the user switches dataset after the response arrives
+- `response.mode` ("demo" or "uploaded") is used as the source of truth for badge text; `datasetLabelAtSend` provides the filename for "uploaded" mode
+- On upload success: `refreshDatasets()` re-fetches `GET /datasets` and auto-selects the newly uploaded dataset by `dataset_id`
+- Sidebar content area is `flex-1 overflow-y-auto` so the two upload sections scroll independently of the fixed logo, nav, and footer
+- `GET /datasets` failure on mount shows inline error in `DatasetSelector` and keeps demo mode selected; the app stays fully functional
+
+**Verification results:**
+
+| Check | Result |
+|-------|--------|
+| Frontend lint (`npm run lint`) | PASS — 0 errors, 0 warnings |
+| Frontend build (`npm run build`) | PASS — compiled + TypeScript clean |
+| eval_all.py — full suite | 28/28 PASS (see below) |
+| PDF upload regression | ✓ DocumentUpload unchanged, PDF endpoint unchanged |
+| CSV upload from frontend | ✓ DatasetUpload accepts .csv / .xlsx, rejects .xls and .pdf |
+| Dataset auto-select after upload | ✓ refreshDatasets() selects new dataset_id after GET /datasets |
+| Uploaded analytics sends dataset_id | ✓ postChat includes dataset_id in body when selectedDatasetId != null |
+| Switch to Demo Data removes dataset_id | ✓ body omits dataset_id when selectedDatasetId = null |
+| Analytics mode badge | ✓ shows "Analytics · Demo Data" / "Analytics · Uploaded · filename.csv" |
+
+**eval_all.py summary (2026-06-04):**
+
+| Suite | Result |
+|-------|--------|
+| Router: 7 classification cases | 7/7 PASS |
+| Analytics: 2 security + 5 demo questions | 7/7 PASS |
+| Document: 4 Q&A checks | 4/4 PASS |
+| Uploads: 4 core + 2 API | 6/6 PASS |
+| API: GET /health + POST /chat ×3 | 4/4 PASS |
+| **TOTAL** | **28/28** |
+
+**Status: Business Data Upload v1 — Phase 4 complete and verified.**
+
+---
+
 ## Up next
 
-- Business Data Upload v1 — Phase 4: frontend (dataset upload widget, dataset selector, mode badge)
+- Business Data Upload v1 — Phase 5 (TBD) or next portfolio feature
