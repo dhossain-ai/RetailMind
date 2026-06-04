@@ -10,8 +10,8 @@ fast defense-in-depth layer that rejects obviously bad SQL before execution.
 import re
 
 from backend.analytics.db import run_query
-from backend.analytics.schema_context import SCHEMA_CONTEXT
-from backend.analytics.sql_validator import validate
+from backend.analytics.schema_context import BUSINESS_SCHEMA_CONTEXT_TEMPLATE, SCHEMA_CONTEXT
+from backend.analytics.sql_validator import validate, validate_uploaded
 from backend.config import settings
 from backend.llm.base import LLMProvider
 from backend.llm.ollama import OllamaProvider
@@ -104,6 +104,58 @@ Interpretation guides — apply only the one relevant to the question:
 - "Price change" means a product that appears with two or more different unit_price values.
 - "Seasonality" means any month whose revenue is roughly 1.5× or more above the adjacent months.\
 """
+
+# SQL generation prompt for uploaded business data (retail.business_sales).
+# {schema}, {dataset_id}, and {question} are substituted before sending to the LLM.
+# The SQL templates embed the actual dataset_id so the LLM sees concrete examples.
+_BUSINESS_SQL_PROMPT = """\
+You are a SQL assistant. Write a single PostgreSQL SELECT query to answer the business sales question.
+
+{schema}
+
+STRICT RULES:
+1. Query ONLY retail.business_sales. Do not join any other table.
+2. Always include WHERE dataset_id = {dataset_id} in your query.
+   If you alias the table (e.g. AS bs), write WHERE bs.dataset_id = {dataset_id}.
+3. Qualify the table with the retail. prefix: retail.business_sales.
+4. Only use column names from the schema above.
+5. For year-month labels: use to_char(sale_date, 'YYYY-MM').
+6. Output ONLY the raw SQL — no explanation, no markdown, no code fences.
+
+TEMPLATES — copy the closest match and adapt it:
+
+Template A — Top-selling product (highest units sold):
+SELECT product, SUM(quantity) AS total_units
+FROM retail.business_sales
+WHERE dataset_id = {dataset_id}
+GROUP BY product
+ORDER BY total_units DESC
+LIMIT 10
+
+Template B — Total revenue (all products):
+SELECT product, SUM(revenue) AS total_revenue
+FROM retail.business_sales
+WHERE dataset_id = {dataset_id}
+GROUP BY product
+ORDER BY total_revenue DESC
+
+Template C — Revenue by month (trend):
+SELECT to_char(sale_date, 'YYYY-MM') AS month, SUM(revenue) AS total_revenue
+FROM retail.business_sales
+WHERE dataset_id = {dataset_id}
+GROUP BY month
+ORDER BY month ASC
+
+Template D — Revenue by category:
+SELECT category, SUM(revenue) AS total_revenue
+FROM retail.business_sales
+WHERE dataset_id = {dataset_id}
+GROUP BY category
+ORDER BY total_revenue DESC
+
+Question: {question}
+
+SQL:"""
 
 
 def _extract_sql(text: str) -> str:
@@ -239,15 +291,22 @@ def get_llm_provider() -> LLMProvider:
     )
 
 
-def run(question: str, llm: LLMProvider) -> dict:
+def run(question: str, llm: LLMProvider, dataset_id: int | None = None) -> dict:
     """Run the full NL→SQL→answer pipeline.
+
+    Args:
+        question:   Natural-language question from the user.
+        llm:        LLM provider to use for SQL generation and answer summarisation.
+        dataset_id: When provided (> 0), queries retail.business_sales filtered to
+                    that dataset. When None, queries the demo star schema.
 
     Returns:
         {
-            "sql":     str   — the validated SQL that was executed,
-            "columns": list  — column names from the result,
-            "rows":    list  — result rows (each a list of values),
-            "answer":  str   — plain-English answer from the LLM,
+            "sql":      str  — the validated SQL that was executed,
+            "columns":  list — column names from the result,
+            "rows":     list — result rows (each a list of values),
+            "answer":   str  — plain-English answer from the LLM,
+            "mode":     str  — "uploaded" or "demo",
         }
 
     Raises:
@@ -255,10 +314,21 @@ def run(question: str, llm: LLMProvider) -> dict:
         psycopg.*   if the DB query fails.
         httpx.*     if the LLM call fails.
     """
-    sql_prompt = _SQL_PROMPT.format(schema=SCHEMA_CONTEXT, question=question)
+    if dataset_id is not None:
+        schema = BUSINESS_SCHEMA_CONTEXT_TEMPLATE.format(dataset_id=dataset_id)
+        sql_prompt = _BUSINESS_SQL_PROMPT.format(
+            schema=schema, dataset_id=dataset_id, question=question
+        )
+    else:
+        sql_prompt = _SQL_PROMPT.format(schema=SCHEMA_CONTEXT, question=question)
+
     raw = llm.complete(sql_prompt)
     sql = _extract_sql(raw)
-    sql = validate(sql)  # may raise ValueError; may append LIMIT
+
+    if dataset_id is not None:
+        sql = validate_uploaded(sql, dataset_id)
+    else:
+        sql = validate(sql)  # may raise ValueError; may append LIMIT
 
     result = run_query(sql)
     columns, rows = result["columns"], result["rows"]
@@ -277,4 +347,5 @@ def run(question: str, llm: LLMProvider) -> dict:
     )
     answer = llm.complete(answer_prompt).strip()
 
-    return {"sql": sql, "columns": columns, "rows": rows, "answer": answer}
+    mode = "uploaded" if dataset_id is not None else "demo"
+    return {"sql": sql, "columns": columns, "rows": rows, "answer": answer, "mode": mode}

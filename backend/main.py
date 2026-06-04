@@ -6,7 +6,7 @@ import httpx
 import psycopg
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import backend.analytics.agent as analytics_agent
 import backend.documents.agent as document_agent
@@ -29,6 +29,14 @@ app.add_middleware(
 
 class AnalyticsRequest(BaseModel):
     question: str
+    dataset_id: int | None = None
+
+    @field_validator("dataset_id")
+    @classmethod
+    def dataset_id_must_be_positive(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("dataset_id must be a positive integer.")
+        return v
 
 
 class AnalyticsResponse(BaseModel):
@@ -37,6 +45,7 @@ class AnalyticsResponse(BaseModel):
     columns: list[str]
     rows: list[list]
     answer: str
+    mode: str | None = None
 
 
 # ── Document models ────────────────────────────────────────────────────────────
@@ -81,6 +90,14 @@ class DatasetListItem(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    dataset_id: int | None = None
+
+    @field_validator("dataset_id")
+    @classmethod
+    def dataset_id_must_be_positive(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("dataset_id must be a positive integer.")
+        return v
 
 
 class ChatResponse(BaseModel):
@@ -90,6 +107,7 @@ class ChatResponse(BaseModel):
     columns: list[str] | None = None
     rows: list[list] | None = None
     sources: list[str] | None = None
+    mode: str | None = None
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
@@ -109,7 +127,7 @@ def health():
 def analytics(req: AnalyticsRequest):
     llm = analytics_agent.get_llm_provider()
     try:
-        result = analytics_agent.run(req.question, llm)
+        result = analytics_agent.run(req.question, llm, dataset_id=req.dataset_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"SQL validation failed: {exc}")
     except psycopg.Error:
@@ -229,7 +247,7 @@ def chat(req: ChatRequest):
     if route == "analytics":
         llm = analytics_agent.get_llm_provider()
         try:
-            result = analytics_agent.run(req.message, llm)
+            result = analytics_agent.run(req.message, llm, dataset_id=req.dataset_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"SQL validation failed: {exc}")
         except psycopg.Error:
@@ -242,6 +260,7 @@ def chat(req: ChatRequest):
             sql=result["sql"],
             columns=result["columns"],
             rows=result["rows"],
+            mode=result["mode"],
         )
 
     if route == "document":
